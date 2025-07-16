@@ -1,0 +1,18 @@
+{
+  "process": "COSTURA",
+  "flow": [
+    "PERSONAL",
+    "PROGRAMADAS",
+    "PARADAS",
+    "RESUMEN_PARO",
+    "GENERAL_NOTES"
+  ],
+  "step_index": 5,
+  "answers": {
+    "PERSONAL": "Jorge llanos cita médica",
+    "PROGRAMADAS": "10 botheven \n9 ultrasonido",
+    "PARADAS": "Auto19 daño mecánico",
+    "RESUMEN_PARO": "Fuelle 1 falta de operario",
+    "GENERAL_NOTES": "Bajo inventario de tela impresa"
+  }
+}

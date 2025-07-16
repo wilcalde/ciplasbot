@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "name": "Orlando_Diaz",
+      "role": "Supervisor",
+      "process": "FILETEADO",
+      "phone": "573168515237"
+    },
+    {
+      "name": "Wilson Calderon",
+      "role": "Administrador",
+      "process": "Todos",
+      "phone": "573176380061"
+    }
+  ]
+}

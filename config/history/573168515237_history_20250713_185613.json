@@ -1,0 +1,17 @@
+{
+  "process": "COSTURA",
+  "flow": [
+    "PERSONAL",
+    "PROGRAMADAS",
+    "PARADAS",
+    "RESUMEN_PARO",
+    "GENERAL_NOTES"
+  ],
+  "step_index": 4,
+  "answers": {
+    "PERSONAL": "Jorge llanos cita médica",
+    "PROGRAMADAS": "14 botheven \n8 ultrasonido",
+    "PARADAS": "Auto10 daño mecánico",
+    "RESUMEN_PARO": "Auto 14 2 horas maquina plana"
+  }
+}

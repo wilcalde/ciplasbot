@@ -1,0 +1,10 @@
+{
+  "process": "COSTURA",
+  "answers": {
+    "PERSONAL": "Jhon Gonz\u00e1lez incapacidad \nJorge Llanos cita m\u00e9dica",
+    "PROGRAMADAS": "10 botheven \n2 Fuelladoras",
+    "PARADAS": "Auto10 da\u00f1o mec\u00e1nico",
+    "RESUMEN_PARO": "Auto25 parada turno c falta material",
+    "GENERAL_NOTES": "Baj\u00f3 inventario de tela impresa"
+  }
+}

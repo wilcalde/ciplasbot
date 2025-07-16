@@ -1,0 +1,10 @@
+{
+  "process": "COSTURA",
+  "answers": {
+    "PERSONAL": "Jorge llanos cita médica \nLuis Molano sin información",
+    "PROGRAMADAS": "10 botheven \n9 ultrasonido",
+    "PARADAS": "Auto 10 máquina plana \nUltrasonido 3 falta de operario",
+    "RESUMEN_PARO": "Auto14 daño mecánico 6 horas\nFuelle 1 falta de material prima",
+    "GENERAL_NOTES": "Bajo inventario tela impresa."
+  }
+}

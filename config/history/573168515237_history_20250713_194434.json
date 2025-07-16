@@ -1,0 +1,10 @@
+{
+  "process": "COSTURA",
+  "answers": {
+    "PERSONAL": "Jorge llanos cita médica",
+    "PROGRAMADAS": "13 botheven \n8 ultrasonido",
+    "PARADAS": "Auto10 daño mecánico",
+    "RESUMEN_PARO": "Válvuladora 1 3 horas maquina plana",
+    "GENERAL_NOTES": "Bajo inventario tela impresa"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "process": "COSTURA",
+  "answers": {
+    "PERSONAL": "Jhon González incapacidad \nJorge llanos cita médica",
+    "PROGRAMADAS": "10 botheven \n2 válvuladoras",
+    "PARADAS": "Auto 10 daño mecánico",
+    "RESUMEN_PARO": "Auto19 2 horas maquina plana \nAuto 14 tc falta de material",
+    "GENERAL_NOTES": "Bajo inventario de tela impresa"
+  }
+}

@@ -1,0 +1,129 @@
+{
+    "name": "Ciro_Marin",
+    "daily_tasks": [
+      {
+        "actividad": "Verificar asistencia de personal al inicio de cada turno A",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "6:00",
+        "turno": "A"
+      },
+      {
+        "actividad": "Verificar novedades de máquinas programadas y entregar planillas a digitación",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "6:15"
+      },
+      {
+        "actividad": "Revisar inventario de producto no conforme y mantener área PNC ordenada",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "6:30"
+      },
+      {
+        "actividad": "Revisar programación y reportar novedades a planeación",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "6:45"
+      },
+      {
+        "actividad": "Reportar a mantenimiento y gestionar novedades de equipos programados",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "7:00"
+      },
+      {
+        "actividad": "Elaborar y enviar informe de novedades de personal a recursos humanos",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "7:15"
+      },
+      {
+        "actividad": "Revisar y aprobar horas extras realizadas y enviar informe",
+        "duracion": "30 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "7:30"
+      },
+      {
+        "actividad": "Hacer pedidos de materias primas según programación",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "8:00"
+      },
+      {
+        "actividad": "Verificar etiquetas no transferidas y puntos de control",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "8:15"
+      },
+      {
+        "actividad": "Revisar reporte de pesos prensa y generar ajustes",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "8:30"
+      },
+      {
+        "actividad": "Retroalimentar operarios sobre métricas de eficiencia y productividad",
+        "duracion": "30 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"],
+        "hora": "9:00"
+      },
+      {
+        "actividad": "Verificar registros de mediciones de calidad",
+        "duracion": "45 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves"],
+        "hora": "9:30"
+      },
+      {
+        "actividad": "Verificar registros de rutinas de control de proceso",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves"],
+        "hora": "10:15"
+      },
+      {
+        "actividad": "Gestionar área PNC y mantener orden",
+        "duracion": "60 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves"],
+        "hora": "10:30"
+      },
+      {
+        "actividad": "Diligenciar rutina de autoinspección BPF y entregar a calidad",
+        "duracion": "30 min",
+        "dias": ["Lunes", "Martes", "Miércoles"],
+        "hora": "11:30"
+      },
+      {
+        "actividad": "Realizar evaluaciones de desempeño programadas",
+        "duracion": "30 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"],
+        "hora": "12:00"
+      },
+      {
+        "actividad": "Definir acuerdos de calidad, actualizaciones y costos",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"],
+        "hora": "13:30"
+      },
+      {
+        "actividad": "Verificar asistencia de personal turno B",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"],
+        "hora": "14:00",
+        "turno": "B"
+      },
+      {
+        "actividad": "Coordinar turno B y C dejando instrucciones",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"],
+        "hora": "14:15",
+        "turno": "B-C"
+      },
+      {
+        "actividad": "Hacer pedidos de materias primas para tarde y noche",
+        "duracion": "15 min",
+        "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"],
+        "hora": "14:30"
+      }
+    ]
+  }
+  
