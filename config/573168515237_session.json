@@ -1,0 +1,12 @@
+{
+  "process": "FILETEADO",
+  "flow": [
+    "PERSONAL",
+    "PROGRAMADAS",
+    "INVENTARIO",
+    "PARADAS",
+    "GENERAL_NOTES"
+  ],
+  "step_index": 0,
+  "answers": {}
+}

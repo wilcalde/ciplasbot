@@ -1,0 +1,17 @@
+{
+  "flow": [
+    "1. Novedades con programación (dificultades, temas por mejorar o reportar)",
+    "2. Producto no conforme (materias primas o productos internos)",
+    "3. Atención y novedades con mantenimiento",
+    "4. Inventario de suministros y materias primas",
+    "5. Estado del inventario de etiquetas sin leer en su ubicación",
+    "6. Novedades en puntos de control y autorizaciones",
+    "7. Retroalimentación al personal (desempeño, disciplina, reconocimientos)",
+    "8. Verificación de registros de máquinas (control de proceso, calidad, listas de chequeo)",
+    "9. Orden, aseo y cumplimiento de BPF",
+    "10. Métodos de trabajo o documentos por actualizar"
+  ],
+  "step_index": 0,
+  "answers": {},
+  "process": "SUPERVISION"
+}
