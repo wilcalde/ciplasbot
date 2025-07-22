@@ -6,6 +6,8 @@ import io
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import seaborn as sns
+
 
 # Estilo oscuro
 mpl.style.use('dark_background')
@@ -103,6 +105,36 @@ if response.status_code == 200:
 
     # Gráficos
 st.markdown("<h4>📊 Producción y tiempos perdidos</h4>", unsafe_allow_html=True)
+#****
+# 📊 Agrupación por máquina con sumatoria total
+resumen_tarjetas = df_filtrado.groupby("Maquinas").agg({
+    'Cantidad_Completada': 'sum',
+    'Tiempo_Corrida': 'sum',
+    'Tiempo_Perdido': 'sum'
+}).reset_index()
+
+# ⚙️ Cálculo de velocidad promedio (total producción / total tiempo corrida) y tiempo disponible
+resumen_tarjetas["Velocidad_Promedio"] = resumen_tarjetas["Cantidad_Completada"] / (resumen_tarjetas["Tiempo_Corrida"] * 60)
+resumen_tarjetas["Tiempo_Disponible"] = resumen_tarjetas["Tiempo_Corrida"] + resumen_tarjetas["Tiempo_Perdido"]
+
+# 🎨 Diseño horizontal de tarjetas
+st.markdown("🕒 <b>Resumen de desempeño por máquina</b>", unsafe_allow_html=True)
+cols_tarjetas = st.columns(len(resumen_tarjetas))
+
+for idx, row in resumen_tarjetas.iterrows():
+    with cols_tarjetas[idx]:
+        st.markdown(
+            f"""
+            <div style='background-color:#0d1b2a; padding:20px; border-radius:10px; text-align:center'>
+                <h5 style='color:white'>🖨️ {row["Maquinas"]}</h5>
+                <p style='color:#46d9f5; font-size:20px'>🚀 {row["Velocidad_Promedio"]:.1f} m/min</p>
+                <p style='color:#f5f242; font-size:18px'>⏱ {row["Tiempo_Disponible"]:.1f} h</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+#*****
 col_g1, col_g2, col_g3 = st.columns(3)
 
 with col_g1:
@@ -156,6 +188,167 @@ with col_g3:
         ax_disp.tick_params(colors='white')
         fig_disp.tight_layout()
         st.pyplot(fig_disp)
-    else:
-        st.warning("⚠️ No hay datos válidos entre 20 y 1000 m/min en el rango seleccionado.")
 
+# fin de la primera seccion
+    
+# Filtro por causa CAMBIO DE REFERENCIA y sin tiempos negativos
+df_cambio_ref_strip = df_filtrado[
+    (df_filtrado['Causa_Paro'] == "CAMBIO DE REFERENCIA") & 
+    (df_filtrado['Tiempo_Perdido'] > 0)
+].copy()
+
+st.markdown("<h4>📌 Tiempos individuales de cambio de referencia por máquina</h4>", unsafe_allow_html=True)
+
+if not df_cambio_ref_strip.empty:
+
+    # 🛠 Tabla resumen por máquina
+    resumen_maquina = df_cambio_ref_strip.groupby("Maquina").agg(
+        Numero_Cambios=('Tiempo_Perdido', 'count'),
+        Tiempo_Promedio_h=('Tiempo_Perdido', 'mean')
+    ).reset_index().round(2).sort_values(by="Tiempo_Promedio_h", ascending=False)
+
+    st.markdown("⏱️ <b>Resumen visual de desempeño por máquina</b>", unsafe_allow_html=True)
+
+    cols_reloj = st.columns(len(resumen_maquina))
+    for i, row in resumen_maquina.iterrows():
+        with cols_reloj[i]:
+            st.markdown(f"""
+                <div style="background-color:#0d1b2a;padding:15px;border-radius:10px;
+                            text-align:center;box-shadow:0 4px 8px rgba(0,0,0,0.6);">
+                    <h5 style="color:white;margin:0;">🛠 {row['Maquina']}</h5>
+                    <p style="color:#F9D923;font-size:22px;margin:5px 0;">⏱ <b>{row['Tiempo_Promedio_h']:.2f} h</b></p>
+                    <p style="color:#D65A31;font-size:16px;margin:0;">🔁 {row['Numero_Cambios']} cambios</p>
+                </div>
+            """, unsafe_allow_html=True)
+
+    # Tabla por operario
+    resumen_operario = df_cambio_ref_strip.groupby("Apellidos_Nombres").agg(
+        Numero_Cambios=('Tiempo_Perdido', 'count'),
+        Tiempo_Promedio_h=('Tiempo_Perdido', 'mean')
+    ).reset_index().round(2).sort_values(by="Tiempo_Promedio_h", ascending=False)
+
+    # Tabla por referencia
+    resumen_referencia = df_cambio_ref_strip.groupby("Descripcion_Articulo").agg(
+        Tiempo_Promedio_h=('Tiempo_Perdido', 'mean')
+    ).reset_index().round(2).sort_values(by="Tiempo_Promedio_h", ascending=False)
+
+    # Distribución horizontal: gráfico + operario + referencia
+    col1, col2, col3 = st.columns([1, 1.2, 1.5])
+
+    with col1:
+        fig_strip, ax = plt.subplots(figsize=(4, 4))
+        sns.stripplot(
+            data=df_cambio_ref_strip,
+            x='Maquina',
+            y='Tiempo_Perdido',
+            hue='Maquina',
+            dodge=True,
+            jitter=True,
+            size=7,
+            palette='Set2',
+            ax=ax
+        )
+        ax.set_title("Tiempos por máquina", color='white')
+        ax.set_xlabel("Máquina", color='white')
+        ax.set_ylabel("Tiempo perdido (h)", color='white')
+        ax.tick_params(colors='white')
+        ax.legend([], [], frameon=False)
+        fig_strip.patch.set_facecolor('#000000')
+        st.pyplot(fig_strip)
+
+    with col2:
+        st.markdown("👷 <b>Resumen por operario</b>", unsafe_allow_html=True)
+        st.dataframe(
+            resumen_operario.style.set_properties(**{
+                'background-color': '#0d1b2a',
+                'color': 'white',
+                'border-color': 'gray',
+                'text-align': 'center'
+            }).set_table_styles([
+                {'selector': 'thead th', 'props': [('background-color', '#1b263b'), ('color', 'white')]}
+            ]).set_table_attributes('class="styled-table"')
+        )
+
+    with col3:
+        st.markdown("📦 <b>Resumen por referencia</b>", unsafe_allow_html=True)
+        st.dataframe(
+            resumen_referencia.style.set_properties(**{
+                'background-color': '#0d1b2a',
+                'color': 'white',
+                'border-color': 'gray',
+                'text-align': 'center'
+            }).set_table_styles([
+                {'selector': 'thead th', 'props': [('background-color', '#1b263b'), ('color', 'white')]}
+            ]).set_table_attributes('class="styled-table"')
+        )
+
+    # 👷 Sección: Desempeño por operario
+df_validos = df_filtrado.copy()
+
+# Asegurar valores válidos
+df_validos = df_validos[
+    (df_validos['Tiempo_Corrida'] >= 0) &
+    (df_validos['Corrida_Standar'] >= 0)
+]
+
+# Agrupación por operario
+resumen_operario = df_validos.groupby("Apellidos_Nombres").agg({
+    "Cantidad_Completada": "sum",
+    "Tiempo_Corrida": "sum",
+    "Tiempo_Perdido": "sum",
+    "Corrida_Standar": "sum"
+}).reset_index()
+
+# Cálculo de velocidad promedio (m/min)
+resumen_operario["Velocidad_mmin"] = (
+    resumen_operario["Cantidad_Completada"] / (resumen_operario["Tiempo_Corrida"] * 60)
+).replace([float('inf'), -float('inf')], 0).fillna(0).round(1)
+
+# Cálculo de productividad
+resumen_operario["Productividad_pct"] = (
+    (resumen_operario["Corrida_Standar"] / 
+     (resumen_operario["Tiempo_Corrida"] + resumen_operario["Tiempo_Perdido"])) * 100
+).replace([float('inf'), -float('inf')], 0).fillna(0).round(1)
+
+# Número de cambios de referencia y tiempo promedio por cambio
+df_cambios = df_validos[
+    (df_validos["Causa_Paro"] == "CAMBIO DE REFERENCIA") &
+    (df_validos["Tiempo_Perdido"] > 0)
+]
+
+cambios_por_operario = df_cambios.groupby("Apellidos_Nombres").agg({
+    "Tiempo_Perdido": ["count", "mean"]
+}).fillna(0)
+
+cambios_por_operario.columns = ["Num_Cambios", "Tiempo_Prom_Cambio"]
+cambios_por_operario = cambios_por_operario.round(1).reset_index()
+
+# Unión con el resumen general
+resumen_operario = resumen_operario.merge(cambios_por_operario, on="Apellidos_Nombres", how="left")
+resumen_operario["Num_Cambios"] = resumen_operario["Num_Cambios"].fillna(0).astype(int)
+resumen_operario["Tiempo_Prom_Cambio"] = resumen_operario["Tiempo_Prom_Cambio"].fillna(0)
+
+# Ordenar por productividad descendente
+resumen_operario = resumen_operario.sort_values(by="Productividad_pct", ascending=False).reset_index(drop=True)
+
+# Mostrar tarjetas en filas de 3
+st.markdown("### 🧑‍🏭🖨️ Desempeño por operario")
+
+cols = st.columns(3)  # 3 tarjetas por fila
+for i, row in resumen_operario.iterrows():
+    with cols[i % 3]:
+        st.markdown(f"""
+        <div style="background-color:#1b263b; color:white; padding:15px; margin-bottom:10px; border-radius:10px">
+            <b>{row['Apellidos_Nombres']}</b><br>
+            🖨️ <b>Metros impresos:</b> {row['Cantidad_Completada']:,.0f} m<br>
+            🧩 <b># Cambios ref:</b> {row['Num_Cambios']}<br>
+            ⏱️ <b>Tiempo prom. cambio:</b> {row['Tiempo_Prom_Cambio']} h<br>
+            🚀 <b>Velocidad prom.:</b> {row['Velocidad_mmin']} m/min<br>
+            📊 <b>Productividad:</b> {row['Productividad_pct']} %
+        </div>
+        """, unsafe_allow_html=True)
+
+
+
+else:
+    st.warning("⚠️ No hay registros válidos de cambios de referencia para mostrar.")
