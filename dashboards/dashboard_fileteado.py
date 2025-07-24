@@ -81,7 +81,7 @@ if response.status_code == 200:
     df['Linea'] = df.apply(clasificar_maquina, axis=1)
 
     # Filtros
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     with col1:
         fechas = pd.to_datetime(df['Fecha_Efectiva'].dt.date.unique())
         fecha_rango = st.date_input("🔕 Selecciona fecha o rango:", value=(min(fechas), max(fechas)))
@@ -90,13 +90,23 @@ if response.status_code == 200:
         linea_seleccionada = st.selectbox("🏠 Línea de producción:", ["Todas"] + sorted(df['Linea'].unique()))
     with col3:
         turno_seleccionado = st.selectbox("👨‍💼 Turno:", ["Todos"] + sorted(df['Turno'].dropna().unique()))
+    with col4:
+        operario_seleccionado = st.selectbox("🧍 Operario:", ["Todos"] + sorted(df['Apellidos_Nombres'].dropna().unique()))
+
 
     # Aplicar filtros
+    # Aplicar filtros
     df_filtrado = df[(df['Fecha_Efectiva'].dt.date >= fecha_inicio) & (df['Fecha_Efectiva'].dt.date <= fecha_fin)].copy()
+
     if linea_seleccionada != "Todas":
         df_filtrado = df_filtrado[df_filtrado['Linea'] == linea_seleccionada]
+
     if turno_seleccionado != "Todos":
         df_filtrado = df_filtrado[df_filtrado['Turno'] == turno_seleccionado]
+
+    if operario_seleccionado != "Todos":
+        df_filtrado = df_filtrado[df_filtrado['Apellidos_Nombres'] == operario_seleccionado]
+
 
     # Gráficos de producción y tiempo perdido
     st.markdown("""
@@ -116,8 +126,10 @@ if response.status_code == 200:
 
     with col_g2:
         st.markdown("<h5>📈 Producción diaria por línea</h5>", unsafe_allow_html=True)
-        df_graf = df[df['Linea'].isin(['planas', 'filete_gasa', 'filete_leno'])].copy()
+        #
+        df_graf = df_filtrado[df_filtrado['Linea'].isin(['planas', 'filete_gasa', 'filete_leno'])].copy()
         grafico = df_graf.groupby([df_graf['Fecha_Efectiva'].dt.date, 'Linea'])['Cantidad_Completada'].sum().unstack(fill_value=0)
+        #
         color_map = {'filete_gasa': 'blue', 'filete_leno': 'orange', 'planas': 'green'}
         colors = [color_map.get(col, 'gray') for col in grafico.columns]
         fig, ax = plt.subplots(figsize=(5, 3.5))
@@ -131,8 +143,10 @@ if response.status_code == 200:
 
     with col_g3:
         st.markdown("<h5>⏱ Tiempo de corrida por día y línea</h5>", unsafe_allow_html=True)
-        df_corrida = df[df['Linea'].isin(['planas', 'filete_gasa', 'filete_leno'])].copy()
+        #
+        df_corrida = df_filtrado[df_filtrado['Linea'].isin(['planas', 'filete_gasa', 'filete_leno'])].copy()
         corrida = df_corrida.groupby([df_corrida['Fecha_Efectiva'].dt.date, 'Linea'])['Tiempo_Corrida'].sum().unstack(fill_value=0)
+        #
         color_map_corrida = {'filete_gasa': 'blue', 'filete_leno': 'orange', 'planas': 'green'}
         colors_corrida = [color_map_corrida.get(col, 'gray') for col in corrida.columns]
         fig_corrida, ax_corrida = plt.subplots(figsize=(5, 3.5))
@@ -208,27 +222,35 @@ if response.status_code == 200:
 
 
     st.markdown("""
-        <h4>⏳ Causas de tiempo perdido por línea</h4>
+    <h4>⏳ Causas de tiempo perdido por línea</h4>
     """, unsafe_allow_html=True)
+
     lineas_objetivo = ['filete_gasa', 'filete_leno', 'planas', 'Auto7', 'corte_gasa']
-    cols = st.columns(5)
-    for i, linea in enumerate(lineas_objetivo):
-        with cols[i]:
-            df_linea = df[
-                (df['Linea'] == linea) &
-                (df['Fecha_Efectiva'].dt.date >= fecha_inicio) &
-                (df['Fecha_Efectiva'].dt.date <= fecha_fin)
-            ].copy()
-            if turno_seleccionado != "Todos":
-                df_linea = df_linea[df_linea['Turno'] == turno_seleccionado]
-            causas = df_linea.groupby('Causa_Paro')['Tiempo_Perdido'].sum().sort_values(ascending=True)
-            fig_causa, ax_causa = plt.subplots(figsize=(3, 3))
-            causas.plot(kind='barh', ax=ax_causa, color="#FF9900")
-            ax_causa.set_title(linea.upper(), color='white', fontsize=10)
-            ax_causa.set_xlabel("Horas", color='white')
-            ax_causa.tick_params(colors='white', labelsize=8)
-            fig_causa.tight_layout()
-            st.pyplot(fig_causa)
+
+    # Recorremos de a 2 líneas por fila
+    for i in range(0, len(lineas_objetivo), 2):
+        cols = st.columns(2)
+        for j in range(2):
+            if i + j < len(lineas_objetivo):
+                linea = lineas_objetivo[i + j]
+            with cols[j]:
+                df_linea = df_filtrado[df_filtrado['Linea'] == linea].copy()
+                causas = df_linea.groupby('Causa_Paro')['Tiempo_Perdido'].sum().sort_values(ascending=True)
+
+                if not causas.empty:
+                    causas = causas.tail(5)
+                    causas.index = [c[:20] + '…' if len(c) > 20 else c for c in causas.index]
+                    fig_causa, ax_causa = plt.subplots(figsize=(3, 2))  # tamaño más pequeño
+                    causas.plot(kind='barh', ax=ax_causa, color="#FF9900")
+                    ax_causa.set_title(linea.upper(), color='white', fontsize=9)
+                    ax_causa.set_xlabel("Horas", color='white', fontsize=8)
+                    ax_causa.set_ylabel("")
+                    ax_causa.tick_params(colors='white', labelsize=7)
+                    fig_causa.tight_layout(pad=0.3)
+                    st.pyplot(fig_causa)
+                else:
+                    st.markdown(f"<p style='text-align: center; font-size: 9px; color: gray;'>Sin datos</p>", unsafe_allow_html=True)
+
 
     # Pie de página
     st.markdown("""
