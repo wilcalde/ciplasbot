@@ -343,19 +343,29 @@ st.markdown("<h3>🕒 Resumen Tiempos perdidos</h3>", unsafe_allow_html=True)
 
 # Asegurar datos válidos
 df_tiempo = df_filtrado[
-    (df_filtrado["Tiempo_Perdido"] > 0) &
+    (df_filtrado["Tiempo_Perdido"] > 0) & 
     (df_filtrado["Causa_Paro"].notnull())
 ].copy()
 
-# Asegurar máquinas objetivo
+# Lista de máquinas objetivo
 maquinas_objetivo = ["COM1", "COM2", "COM3", "COM4", "COM5"]
-cols_graficos = st.columns(5)
 
-for idx, maquina in enumerate(maquinas_objetivo):
+# Gráfico total por causa (todas las máquinas)
+resumen_total = (
+    df_tiempo.groupby("Causa_Paro")["Tiempo_Perdido"]
+    .sum()
+    .sort_values(ascending=False)
+    .round(2)
+)
+
+# 🔷 Mostrar gráficos de 2 por fila
+graficos = []
+
+# Generar gráficos por máquina
+for maquina in maquinas_objetivo:
     df_maquina = df_tiempo[df_tiempo["Maquinas"] == maquina]
     if df_maquina.empty:
-        with cols_graficos[idx]:
-            st.markdown(f"⚠️ No hay datos de paros para {maquina}")
+        graficos.append(None)
         continue
 
     resumen_causas = (
@@ -365,7 +375,7 @@ for idx, maquina in enumerate(maquinas_objetivo):
         .round(2)
     )
 
-    fig, ax = plt.subplots(figsize=(4, 3))
+    fig, ax = plt.subplots(figsize=(4.5, 3.5))
     resumen_causas.plot(kind="barh", ax=ax, color="tomato")
     ax.invert_yaxis()
     ax.set_title(f"{maquina}", color="white", fontsize=10)
@@ -374,10 +384,30 @@ for idx, maquina in enumerate(maquinas_objetivo):
     ax.tick_params(colors="white", labelsize=8)
     fig.patch.set_facecolor('#000000')
     ax.set_facecolor('#000000')
+    graficos.append(fig)
 
-    with cols_graficos[idx]:
-        st.pyplot(fig)
+# Crear el gráfico global combinado
+fig_total, ax_total = plt.subplots(figsize=(4.5, 3.5))
+resumen_total.plot(kind="barh", ax=ax_total, color="orange")
+ax_total.invert_yaxis()
+ax_total.set_title("TOTAL (todas las máquinas)", color="white", fontsize=10)
+ax_total.set_xlabel("Horas", color="white")
+ax_total.set_ylabel("Causa", color="white")
+ax_total.tick_params(colors="white", labelsize=8)
+fig_total.patch.set_facecolor('#000000')
+ax_total.set_facecolor('#000000')
+graficos.append(fig_total)
 
+# Mostrar los 6 gráficos (5 máquinas + total) en 3 filas de 2 columnas
+for i in range(0, len(graficos), 2):
+    cols = st.columns(2)
+    for j in range(2):
+        if i + j < len(graficos):
+            with cols[j]:
+                if graficos[i + j] is None:
+                    st.markdown("⚠️ No hay datos disponibles.")
+                else:
+                    st.pyplot(graficos[i + j])
 
 # Fin se seccion tiempos perdidos
 
