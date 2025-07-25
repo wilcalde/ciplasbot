@@ -6,6 +6,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
+import numpy as np
+
 
 # Estilo oscuro
 mpl.style.use('dark_background')
@@ -110,10 +112,111 @@ if response.status_code == 200:
     df_embobina = df[df['Centro_Trabajo'] == 'EMBOBINA']
 
     # PÁGINAS
+    ### inicio pagina primcipal
     if pagina == "Principal":
         st.subheader("📊 Sección principal")
-        st.write("Aquí va el resumen general del proceso de cuerdas.")
+        st.write("Este resumen muestra el consumo de materias primas en el proceso de Torsión, clasificado por categoría de denier.")
 
+        # 🎛️ Filtro de fecha
+        st.markdown("### 🎛️ Filtro de fecha para el análisis")
+        fechas = pd.to_datetime(df['Fecha_Efectiva'].dt.date.unique())
+        fecha_rango = st.date_input("📅 Selecciona un rango de fechas:", value=(min(fechas), max(fechas)))
+        fecha_inicio, fecha_fin = fecha_rango if isinstance(fecha_rango, tuple) else (fecha_rango, fecha_rango)
+
+        # 🔄 Filtrar Torsión
+        df_torsion_filtrado = df_torsion.copy()
+        df_torsion_filtrado = df_torsion_filtrado[
+            (df_torsion_filtrado['Fecha_Efectiva'].dt.date >= fecha_inicio) &
+            (df_torsion_filtrado['Fecha_Efectiva'].dt.date <= fecha_fin)
+        ]
+
+        if df_torsion_filtrado.empty:
+            st.warning("⚠️ No hay datos de torsión disponibles para el rango de fechas seleccionado.")
+        else:
+            df_datos = df_torsion_filtrado.copy()
+            df_datos['Tipo_Material'] = df_datos['Descripcion_Articulo'].str.extract(r'^(RAF|MONOF)', expand=False)
+            df_datos['Denier'] = pd.to_numeric(df_datos['Descripcion_Articulo'].str.extract(r'(\d{4,6})', expand=False), errors='coerce')
+
+            # Clasificación de denier
+            def clasificar_denier(d):
+                if pd.isna(d):
+                    return 'Desconocido'
+                elif 2000 <= d <= 6000:
+                    return 'Bajo'
+                elif 6001 <= d <= 12000:
+                    return 'Medio'
+                elif d > 12000:
+                    return 'Alto'
+                else:
+                    return 'Fuera de rango'
+
+            df_datos['Categoria_Denier'] = df_datos['Denier'].apply(clasificar_denier)
+            df_datos['Cantidad_Completada'] = pd.to_numeric(df_datos['Cantidad_Completada'], errors='coerce').fillna(0)
+            df_datos['Fecha'] = df_datos['Fecha_Efectiva'].dt.date
+
+            st.markdown("## 🧵 Consumo de materia prima Torsión")
+
+            # ===============================
+            # GRÁFICOS agrupados (2 por fila)
+            # ===============================
+            col1, col2 = st.columns(2)
+
+            # 🥧 Gráfico de torta por categoría
+            with col1:
+                st.markdown("### 🥧 % Kg por categoría de denier")
+                resumen_torta = df_datos.groupby('Categoria_Denier')['Cantidad_Completada'].sum().reset_index()
+                fig1, ax1 = plt.subplots(figsize=(5, 4))
+                colores_torta = ['#1f77b4', '#ff7f0e', '#2ca02c', '#888888']
+                ax1.pie(resumen_torta['Cantidad_Completada'],
+                    labels=resumen_torta['Categoria_Denier'],
+                    autopct='%1.1f%%',
+                    startangle=90,
+                    colors=colores_torta,
+                    textprops={'color': 'white'})
+                ax1.set_title("Distribución por categoría", color='white')
+                fig1.patch.set_facecolor('#0e1117')
+                st.pyplot(fig1)
+
+            # 📊 Gráfico de barras apiladas por día
+            with col2:
+                st.markdown("### 📊 Kg diarios por categoría de denier")
+                resumen_barras = df_datos.groupby(['Fecha', 'Categoria_Denier'])['Cantidad_Completada'].sum().reset_index()
+                pivot_barras = resumen_barras.pivot(index='Fecha', columns='Categoria_Denier', values='Cantidad_Completada').fillna(0)
+
+                fig2, ax2 = plt.subplots(figsize=(7, 4))
+                pivot_barras.plot(kind='bar', stacked=True, ax=ax2, color=colores_torta, edgecolor='black')
+                ax2.set_ylabel("Kg procesados", color='white')
+                ax2.set_title("Producción diaria por categoría", color='white')
+                ax2.tick_params(axis='x', rotation=45, colors='white')
+                ax2.tick_params(axis='y', colors='white')
+                ax2.legend(title="Categoría", labelcolor='white')
+                ax2.set_facecolor('#0e1117')
+                fig2.patch.set_facecolor('#0e1117')
+                st.pyplot(fig2)
+
+            # 📊 Nuevo gráfico de barras horizontales por Denier
+            col3, _ = st.columns([1.2, 0.8])  # más espacio a la gráfica
+            with col3:
+                st.markdown("### 📏 Kg por Denier específico")
+                resumen_horizontal = df_datos.groupby('Denier')['Cantidad_Completada'].sum().reset_index().dropna()
+                resumen_horizontal = resumen_horizontal.sort_values(by='Cantidad_Completada', ascending=True)
+
+                fig3, ax3 = plt.subplots(figsize=(8, 5))
+                colores = plt.cm.magma(np.linspace(0.1, 0.9, len(resumen_horizontal)))
+                ax3.barh(resumen_horizontal['Denier'].astype(str), resumen_horizontal['Cantidad_Completada'], color=colores)
+                ax3.set_xlabel("Kg procesados", color='white')
+                ax3.set_ylabel("Denier", color='white')
+                ax3.set_title("Kg totales por Denier procesado", color='white')
+                ax3.tick_params(axis='x', colors='white')
+                ax3.tick_params(axis='y', labelsize=8, colors='white')
+                fig3.tight_layout()
+                fig3.patch.set_facecolor('#0e1117')
+                ax3.set_facecolor('#0e1117')
+                st.pyplot(fig3)
+
+
+   
+     ### fin pagina principla   
     elif pagina == "Cableado":
         st.subheader("🧵 Cableado")
         st.write("Aquí analizamos el proceso de cableado.")
