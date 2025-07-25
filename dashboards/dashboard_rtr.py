@@ -458,27 +458,44 @@ resumen_operario = resumen_operario.merge(vel_turno_pivot, on="Apellidos_Nombres
 resumen_operario = resumen_operario.sort_values(by="Productividad_pct", ascending=False).reset_index(drop=True)
 
 # Mostrar tarjetas
-st.markdown("### 🧑‍🏭🖨️ Desempeño por operario (con velocidad por turno)")
+ # 🧑‍🏭 Tabla profesional de desempeño por operario
+st.markdown("### 🧑‍🏭🖨️ Ranking de desempeño por operario (ordenado por productividad)")
 
-cols = st.columns(3)
-for i, row in resumen_operario.iterrows():
-    with cols[i % 3]:
-        st.markdown(f"""
-        <div style="background-color:#1b263b; color:white; padding:15px; margin-bottom:10px; border-radius:10px">
-            <b>{row['Apellidos_Nombres']}</b><br>
-            🖨️ <b>Metros impresos:</b> {row['Cantidad_Completada']:,.0f} m<br>
-            🧩 <b># Cambios ref:</b> {row['Num_Cambios']}<br>
-            ⏱️ <b>Tiempo prom. cambio:</b> {row['Tiempo_Prom_Cambio']} h<br>
-            🚀 <b>Vel. global:</b> {row['Velocidad_mmin']} m/min<br>
-            <hr style='border:0.5px solid #ccc'>
-            🔁 <b>Turno A:</b> {row.get('Vel_A', '—')} m/min<br>
-            🔁 <b>Turno B:</b> {row.get('Vel_B', '—')} m/min<br>
-            🔁 <b>Turno C:</b> {row.get('Vel_C', '—')} m/min<br>
-            📊 <b>Productividad:</b> {row['Productividad_pct']} %
-        </div>
-        """, unsafe_allow_html=True)
+# Añadir íconos de desempeño
+resumen_operario["Ícono"] = resumen_operario["Productividad_pct"].apply(
+    lambda x: "🏅" if x >= 60 else "🔍"
+)
 
+# Reordenar columnas para visualización
+resumen_operario_vista = resumen_operario[[
+    "Ícono", "Apellidos_Nombres", "Cantidad_Completada", "Num_Cambios",
+    "Tiempo_Prom_Cambio", "Velocidad_mmin", "Vel_A", "Vel_B", "Vel_C", "Productividad_pct"
+]]
 
+# Renombrar columnas
+resumen_operario_vista.columns = [
+    "🔎", "Operario", "Metros impresos", "# Cambios ref", "Tiempo prom. cambio (h)",
+    "Vel. global (m/min)", "Vel. Turno A", "Vel. Turno B", "Vel. Turno C", "Productividad (%)"
+]
 
-else:
-    st.warning("⚠️ No hay registros válidos de cambios de referencia para mostrar.")
+# Formatear valores
+resumen_operario_vista["Metros impresos"] = resumen_operario_vista["Metros impresos"].map(lambda x: f"{x:,.0f}")
+resumen_operario_vista["Vel. global (m/min)"] = resumen_operario_vista["Vel. global (m/min)"].map(lambda x: f"{x:.1f}")
+resumen_operario_vista["Vel. Turno A"] = resumen_operario_vista["Vel. Turno A"].map(lambda x: f"{x:.1f}" if pd.notna(x) else "—")
+resumen_operario_vista["Vel. Turno B"] = resumen_operario_vista["Vel. Turno B"].map(lambda x: f"{x:.1f}" if pd.notna(x) else "—")
+resumen_operario_vista["Vel. Turno C"] = resumen_operario_vista["Vel. Turno C"].map(lambda x: f"{x:.1f}" if pd.notna(x) else "—")
+resumen_operario_vista["Tiempo prom. cambio (h)"] = resumen_operario_vista["Tiempo prom. cambio (h)"].map(lambda x: f"{x:.1f}")
+resumen_operario_vista["Productividad (%)"] = resumen_operario_vista["Productividad (%)"].map(lambda x: f"{x:.1f}")
+
+# Mostrar tabla estilizada
+st.dataframe(
+    resumen_operario_vista.style.set_properties(**{
+        'background-color': '#0d1b2a',
+        'color': 'white',
+        'border-color': '#0d1b2a',
+        'text-align': 'center',
+        'font-size': '13px'
+    }).set_table_styles([
+        {'selector': 'thead th', 'props': [('background-color', '#1b263b'), ('color', 'white'), ('font-weight', 'bold')]}
+    ]).set_table_attributes('class="styled-table"')
+)
