@@ -573,21 +573,36 @@ if response.status_code == 200:
 
         #Fin pagina cableado
     elif pagina == "Torsión":
+        #inicio seccion torsion
         st.subheader("🔄 Torsión")
         st.write("Aquí analizamos el proceso de torsión.")
-        # 🎛️ Filtros para torsion
+        # 🎛️ Filtros para torsión
         st.markdown("### 🎛️ Filtros")
 
         col1, col2, col3, col4 = st.columns([2.5, 1.5, 1.5, 2])
-
+        
         with col1:
             fechas = pd.to_datetime(df_torsion['Fecha_Efectiva'].dt.date.unique())
-            fecha_rango = st.date_input("📅 Rango de fechas:", value=(min(fechas), max(fechas)))
+            fecha_rango = st.date_input(
+                "📅 Rango de fechas:",
+                value=(min(fechas), max(fechas))
+            )
             fecha_inicio, fecha_fin = fecha_rango if isinstance(fecha_rango, tuple) else (fecha_rango, fecha_rango)
 
         with col2:
-            maquinas = ["Todas"] + sorted(df_torsion['Maquina'].dropna().unique())
-            maquina_seleccionada = st.selectbox("🖨️ Máquina:", maquinas)
+            grupos = {
+                'ROBLON': [f"ROB{i}" for i in range(1, 11)],
+                'SIMAS': ['S8', 'S9', 'S10', 'S11', 'S12']
+            }
+            mapping = {}
+            for grp, lst in grupos.items():
+                for m in lst:
+                    mapping[m] = grp
+            for m in sorted(df_torsion['Maquina'].dropna().unique()):
+                if m not in mapping:
+                    mapping[m] = m
+            opciones_grupos = ['Todas'] + sorted(set(mapping.values()))
+            maquina_seleccionada = st.selectbox("🖨️ Grupo/Máquina:", opciones_grupos)
 
         with col3:
             turnos = ["Todos"] + sorted(df_torsion['Turno'].dropna().unique())
@@ -598,106 +613,56 @@ if response.status_code == 200:
             operario_seleccionado = st.selectbox("👷 Operario:", operarios)
 
         # Aplicar filtros
-        df_filtrado = df_torsion.copy()
-        df_filtrado = df_filtrado[
-            (df_filtrado['Fecha_Efectiva'].dt.date >= fecha_inicio) &
-            (df_filtrado['Fecha_Efectiva'].dt.date <= fecha_fin)
-        ]
-
+        df_filtrado = df_torsion[
+            (df_torsion['Fecha_Efectiva'].dt.date >= fecha_inicio) &
+            (df_torsion['Fecha_Efectiva'].dt.date <= fecha_fin)
+        ].copy()
         if maquina_seleccionada != "Todas":
-            df_filtrado = df_filtrado[df_filtrado['Maquina'] == maquina_seleccionada]
-
+            df_filtrado = df_filtrado[df_filtrado['Maquina'].map(mapping) == maquina_seleccionada]
         if turno_seleccionado != "Todos":
             df_filtrado = df_filtrado[df_filtrado['Turno'] == turno_seleccionado]
-
         if operario_seleccionado != "Todos":
             df_filtrado = df_filtrado[df_filtrado['Apellidos_Nombres'] == operario_seleccionado]
 
-        st.dataframe(df_torsion.head())
+        if df_filtrado.empty:
+            st.warning("⚠️ No hay datos para los filtros seleccionados.")
+        else:
+            # --- Gráfico 1: Kg por grupo/máquina con productividad ---
+            agg = df_filtrado.groupby(df_filtrado['Maquina'].map(mapping)).agg(
+                Kg=('Cant_Kg', 'sum'),
+                Corrida=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            )
+            agg['Productividad'] = (agg['Corrida'] / (agg['Tiempo_Corrida'] + agg['Tiempo_Perdido'])) * 100
+            agg = agg.sort_values('Kg')
 
-    elif pagina == "Trenzado":
-        st.subheader("🧶 Trenzado")
-        st.write("Aquí analizamos el proceso de trenzado.")
-        # 🎛️ Filtros para trenzado
-        st.markdown("### 🎛️ Filtros")
+            fig1, ax1 = plt.subplots(figsize=(6, 4))
+            bars = ax1.barh(agg.index, agg['Kg'], color='#66c2a5', edgecolor='white')
+            ax1.set_xlabel("Kg procesados", color='white')
+            ax1.set_ylabel("Grupo/Máquina", color='white')
+            ax1.set_title("Kg por grupo/máquina (Torsión)", color='white')
+            ax1.tick_params(axis='x', colors='white')
+            ax1.tick_params(axis='y', colors='white')
+            ax1.set_facecolor('#0e1117')
+            fig1.patch.set_facecolor('#0e1117')
+            for bar, (_, row) in zip(bars, agg.iterrows()):
+                w = bar.get_width()
+                ax1.text(
+                    w * 0.02,
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{row['Productividad']:.1f}%",
+                    va='center', color='white', fontsize=9
+                )
 
-        col1, col2, col3, col4 = st.columns([2.5, 1.5, 1.5, 2])
+            # --- Gráfico 2: Producción diaria + % productividad ---
+            df_filtrado['Fecha'] = df_filtrado['Fecha_Efectiva'].dt.date
+            prod_daily = df_filtrado.groupby(['Fecha', df_filtrado['Maquina'].map(mapping)])['Cant_Kg'].sum().unstack(fill_value=0)
+            agg_day = df_filtrado.groupby('Fecha').agg(
+                Corrida=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            )
+            agg_day['%_productividad'] = (agg_day['Corrida'] / (agg_day['Tiempo_Corrida'] + agg_day['Tiempo_Perdido'])) * 100
 
-        with col1:
-            fechas = pd.to_datetime(df_trenzado['Fecha_Efectiva'].dt.date.unique())
-            fecha_rango = st.date_input("📅 Rango de fechas:", value=(min(fechas), max(fechas)))
-            fecha_inicio, fecha_fin = fecha_rango if isinstance(fecha_rango, tuple) else (fecha_rango, fecha_rango)
-
-        with col2:
-            maquinas = ["Todas"] + sorted(df_trenzado['Maquina'].dropna().unique())
-            maquina_seleccionada = st.selectbox("🖨️ Máquina:", maquinas)
-
-        with col3:
-            turnos = ["Todos"] + sorted(df_trenzado['Turno'].dropna().unique())
-            turno_seleccionado = st.selectbox("🧭 Turno:", turnos)
-
-        with col4:
-            operarios = ["Todos"] + sorted(df_trenzado['Apellidos_Nombres'].dropna().unique())
-            operario_seleccionado = st.selectbox("👷 Operario:", operarios)
-
-        # Aplicar filtros
-        df_filtrado = df_trenzado.copy()
-        df_filtrado = df_filtrado[
-            (df_filtrado['Fecha_Efectiva'].dt.date >= fecha_inicio) &
-            (df_filtrado['Fecha_Efectiva'].dt.date <= fecha_fin)
-        ]
-
-        if maquina_seleccionada != "Todas":
-            df_filtrado = df_filtrado[df_filtrado['Maquina'] == maquina_seleccionada]
-
-        if turno_seleccionado != "Todos":
-            df_filtrado = df_filtrado[df_filtrado['Turno'] == turno_seleccionado]
-
-        if operario_seleccionado != "Todos":
-            df_filtrado = df_filtrado[df_filtrado['Apellidos_Nombres'] == operario_seleccionado]
-        st.dataframe(df_trenzado.head())
-
-    elif pagina == "Embobina":
-        st.subheader("📦 Embobina")
-        st.write("Aquí analizamos el proceso de embobinado.")
-        # 🎛️ Filtros para embobina
-        st.markdown("### 🎛️ Filtros")
-
-        col1, col2, col3, col4 = st.columns([2.5, 1.5, 1.5, 2])
-
-        with col1:
-            fechas = pd.to_datetime(df_embobina['Fecha_Efectiva'].dt.date.unique())
-            fecha_rango = st.date_input("📅 Rango de fechas:", value=(min(fechas), max(fechas)))
-            fecha_inicio, fecha_fin = fecha_rango if isinstance(fecha_rango, tuple) else (fecha_rango, fecha_rango)
-
-        with col2:
-            maquinas = ["Todas"] + sorted(df_embobina['Maquina'].dropna().unique())
-            maquina_seleccionada = st.selectbox("🖨️ Máquina:", maquinas)
-
-        with col3:
-            turnos = ["Todos"] + sorted(df_embobina['Turno'].dropna().unique())
-            turno_seleccionado = st.selectbox("🧭 Turno:", turnos)
-
-        with col4:
-            operarios = ["Todos"] + sorted(df_embobina['Apellidos_Nombres'].dropna().unique())
-            operario_seleccionado = st.selectbox("👷 Operario:", operarios)
-
-        # Aplicar filtros
-        df_filtrado = df_embobina.copy()
-        df_filtrado = df_filtrado[
-            (df_filtrado['Fecha_Efectiva'].dt.date >= fecha_inicio) &
-            (df_filtrado['Fecha_Efectiva'].dt.date <= fecha_fin)
-        ]
-
-        if maquina_seleccionada != "Todas":
-            df_filtrado = df_filtrado[df_filtrado['Maquina'] == maquina_seleccionada]
-
-        if turno_seleccionado != "Todos":
-            df_filtrado = df_filtrado[df_filtrado['Turno'] == turno_seleccionado]
-
-        if operario_seleccionado != "Todos":
-            df_filtrado = df_filtrado[df_filtrado['Apellidos_Nombres'] == operario_seleccionado]
-        st.dataframe(df_embobina.head())
-
-else:
-    st.error(f"❌ Error al descargar el archivo. Código de estado: {response.status_code}")
+            fig2, ax2 = plt.subplots(figsize=(6, 4))

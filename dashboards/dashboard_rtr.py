@@ -235,6 +235,92 @@ df_cambio_ref_strip = df_filtrado[
     (df_filtrado['Tiempo_Perdido'] > 0)
 ].copy()
 
+# --- Sección: 6 líneas individuales + 1 línea de promedio total con tendencia destacada ---
+
+import numpy as np
+import matplotlib.dates as mdates
+
+# 1. Cálculo de velocidad y extracción de fecha
+df['Velocidad'] = df['Cantidad_Completada'] / (df['Tiempo_Corrida'] * 60)
+df['Fecha'] = df['Fecha_Efectiva'].dt.date
+
+# 2. Promedio diario de velocidad por máquina
+avg_speed = (
+    df
+    .groupby(['Fecha', 'Maquina'])['Velocidad']
+    .mean()
+    .reset_index()
+)
+
+# 3. Pivot para graficar cada máquina
+pivot_speed = avg_speed.pivot(index='Fecha', columns='Maquina', values='Velocidad')
+
+# 4. Serie de promedio total (todas las máquinas)
+promedio_total = pivot_speed.mean(axis=1)
+
+# 5. Crear figura con 2 filas × 3 columnas
+fig, axes = plt.subplots(2, 3, figsize=(15, 10), sharex=True, sharey=True)
+axes = axes.flatten()
+machines = pivot_speed.columns.tolist()
+
+# 6. Dibujar una línea por máquina en cada subplot
+for i, maquina in enumerate(machines):
+    ax = axes[i]
+    ax.plot(
+        pivot_speed.index,
+        pivot_speed[maquina],
+        marker='o'
+    )
+    ax.set_title(maquina)
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.set_xlabel('Fecha')
+    ax.set_ylabel('Velocidad (u/minuto)')
+
+# 7. Último subplot: promedio total + tendencia muy visible
+ax_total = axes[-1]
+# Serie principal
+ax_total.plot(
+    promedio_total.index,
+    promedio_total.values,
+    marker='o',
+    color='yellow',
+    linewidth=2,
+    label='Promedio total',
+    zorder=3
+)
+# Conversión de fechas para la regresión
+dates_num = mdates.date2num(promedio_total.index)
+y = promedio_total.values
+# Cálculo de la tendencia lineal
+coef = np.polyfit(dates_num, y, 1)
+trend = np.poly1d(coef)
+# Línea de tendencia destacada
+ax_total.plot(
+    promedio_total.index,
+    trend(dates_num),
+    linestyle='--',
+    color='red',       # rojo para resaltar
+    linewidth=3,       # más gruesa
+    zorder=4,
+    label='Tendencia'
+)
+# Formateo de fechas
+ax_total.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+for label in ax_total.get_xticklabels():
+    label.set_rotation(45)
+    label.set_ha('right')
+
+ax_total.set_title('Promedio total con tendencia')
+ax_total.grid(True, linestyle='--', alpha=0.4)
+ax_total.set_xlabel('Fecha')
+ax_total.set_ylabel('Velocidad (u/minuto)')
+ax_total.legend(loc='upper left')
+
+fig.tight_layout()
+
+# 8. Mostrar en Streamlit
+st.pyplot(fig) 
+
 st.markdown("<h4>📌 Tiempos individuales de cambio de referencia por máquina</h4>", unsafe_allow_html=True)
 
 if not df_cambio_ref_strip.empty:
@@ -499,3 +585,115 @@ st.dataframe(
         {'selector': 'thead th', 'props': [('background-color', '#1b263b'), ('color', 'white'), ('font-weight', 'bold')]}
     ]).set_table_attributes('class="styled-table"')
 )
+
+# nueva seccion
+# ---- Sección actualizada: Agrupar por referencia y máquina (corridas multi-día) ----
+st.markdown("<h4>📊 Análisis de volúmenes por referencia y máquina</h4>", unsafe_allow_html=True)
+
+# Preparar datos
+df_ref = df_filtrado.copy()
+
+# Totalizar metros impresos por referencia + máquina, sin dividir por fecha
+resumen_ref = (
+    df_ref
+    .groupby(['Descripcion_Articulo', 'Maquinas'], as_index=False)
+    .agg(metros_continuos=('Cantidad_Completada', 'sum'))
+)
+
+# Eliminar registros cero
+resumen_ref = resumen_ref[resumen_ref['metros_continuos'] > 0]
+
+# Categorizar para gráfica de barras y torta
+bins = [0, 3000, 5000, float('inf')]
+labels = ['<3000', '3000-5000', '>5000']
+resumen_ref['categoria'] = pd.cut(
+    resumen_ref['metros_continuos'],
+    bins=bins,
+    labels=labels,
+    right=False
+)
+
+# Scatter: metros continuos por referencia (x sin etiquetas)
+fig_disp, ax_disp = plt.subplots(figsize=(5, 4))
+sns.scatterplot(
+    data=resumen_ref,
+    x='Descripcion_Articulo',
+    y='metros_continuos',
+    legend=False,
+    ax=ax_disp
+)
+ax_disp.tick_params(axis='x', labelbottom=False)
+ax_disp.set_ylabel("Metros impresos", color="white")
+ax_disp.set_title("Volumen total por referencia y máquina", color="white")
+ax_disp.tick_params(colors='white')
+fig_disp.tight_layout()
+
+# Torta: distribución general
+cat_counts = resumen_ref['categoria'].value_counts().reindex(labels).fillna(0)
+fig_pie, ax_pie = plt.subplots(figsize=(4, 4))
+ax_pie.pie(
+    cat_counts,
+    labels=labels,
+    autopct='%1.1f%%',
+    textprops={'color': 'white'}
+)
+ax_pie.set_title("Distribución por tamaño de pedido", color="white")
+fig_pie.patch.set_facecolor('#000000')
+ax_pie.set_facecolor('#000000')
+fig_pie.tight_layout()
+
+# Mostrar scatter + tabla alineados
+col1, col2 = st.columns(2)
+with col1:
+    st.pyplot(fig_disp)
+with col2:
+    st.dataframe(
+        resumen_ref[['Descripcion_Articulo','Maquinas','metros_continuos']].style
+            .set_properties(**{
+                'background-color':'#0d1b2a',
+                'color':'white',
+                'border-color':'gray',
+                'text-align':'center'
+            })
+            .set_table_styles([{
+                'selector':'thead th',
+                'props':[
+                    ('background-color','#1b263b'),
+                    ('color','white'),
+                    ('font-weight','bold')
+                ]
+            }])
+            .set_table_attributes('class="styled-table"')
+    )
+
+# ---- Barras horizontales: % de pedidos por rango y máquina ----
+machine_counts = (
+    resumen_ref
+    .groupby(['Maquinas','categoria'])
+    .size()
+    .unstack(fill_value=0)
+)
+machine_pct = machine_counts.div(machine_counts.sum(axis=1), axis=0)*100
+
+layout = [['COM1','COM2'],['COM3','COM4'],['COM5']]
+for row in layout:
+    cols = st.columns(2)
+    for i, m in enumerate(row):
+        with cols[i]:
+            if m in machine_pct.index:
+                fig_bar, ax_bar = plt.subplots(figsize=(5,3.5))
+                machine_pct.loc[m].plot(kind='barh', ax=ax_bar)
+                ax_bar.set_xlim(0,100)
+                ax_bar.set_title(m, color="white")
+                ax_bar.set_xlabel("% pedidos", color="white")
+                ax_bar.tick_params(colors='white', labelsize=8)
+                fig_bar.patch.set_facecolor('#000000')
+                ax_bar.set_facecolor('#000000')
+                fig_bar.tight_layout()
+                st.pyplot(fig_bar)
+            else:
+                st.markdown(f"⚠️ Sin datos: {m}")
+    # última fila, segunda columna: pie
+    if len(row)==1:
+        with cols[1]:
+            st.pyplot(fig_pie)
