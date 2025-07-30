@@ -1069,9 +1069,9 @@ if response.status_code == 200:
                 Tiempo_Corrida=('Tiempo_Corrida','sum'),
                 Tiempo_Perdido=('Tiempo_Perdido','sum')
             ).reset_index()
-                df_perf['%_productividad'] = (
-                df_perf['Corrida'] /
-                (df_perf['Tiempo_Corrida'] + df_perf['Tiempo_Perdido'])
+            df_perf['%_productividad'] = (
+            df_perf['Corrida'] /
+            (df_perf['Tiempo_Corrida'] + df_perf['Tiempo_Perdido'])
             ) * 100
             df_perf = df_perf[['Apellidos_Nombres','Cant_Kg','%_productividad']]\
                     .sort_values('%_productividad', ascending=False)\
