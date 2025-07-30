@@ -992,14 +992,14 @@ if response.status_code == 200:
                     color=colors_p,
                     edgecolor='white'
                 )
-                ax3.set_xlabel('Horas perdidas', color='white')
-                ax3.set_ylabel('Causa de paro', color='white')
-                ax3.set_title('Tiempo de paro por causa', color='white')
-                ax3.tick_params(axis='x', colors='white')
-                ax3.tick_params(axis='y', colors='white')
-                ax3.set_facecolor('#0e1117')
-                fig3.patch.set_facecolor('#0e1117')
-                st.pyplot(fig3)
+                    ax3.set_xlabel('Horas perdidas', color='white')
+                    ax3.set_ylabel('Causa de paro', color='white')
+                    ax3.set_title('Tiempo de paro por causa', color='white')
+                    ax3.tick_params(axis='x', colors='white')
+                    ax3.tick_params(axis='y', colors='white')
+                    ax3.set_facecolor('#0e1117')
+                    fig3.patch.set_facecolor('#0e1117')
+                    st.pyplot(fig3)
 
             with col4:
                 df_fil['Horas_Disponibles'] = df_fil['Tiempo_Corrida'] + df_fil['Tiempo_Perdido']
