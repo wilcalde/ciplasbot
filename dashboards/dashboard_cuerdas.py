@@ -117,7 +117,7 @@ if response.status_code == 200:
     df_embobina = df[df['Centro_Trabajo'] == 'EMBOBINA'].copy()
 
     # Sidebar de navegación
-    st.sidebar.title("📁 Navegación")
+    st.sidebar.title("📁 Cordeleria")
     pagina = st.sidebar.radio(
     "Ir a la sección:",
     ["Principal", "Cableado", "Torsión", "Trenzado", "Embobina"]
@@ -467,12 +467,13 @@ if response.status_code == 200:
                 fig4.patch.set_facecolor('#0e1117')
                 st.pyplot(fig4)
         
-        # --- NUEVA SECCIÓN: Diámetros producidos y tabla de referencias ---
+        ### --- NUEVA SECCIÓN: Diámetros producidos y tabla de referencias ---
         
+        # --- NUEVA SECCIÓN: Diámetros producidas y % productividad ---
         st.markdown("## 🎯 Diámetros de cuerdas producidas", unsafe_allow_html=True)
         col5, col6 = st.columns(2)
 
-        # 1) Gráfico de barras horizontales: Kg por diámetro (excluyendo referencias HC)
+        # 1) Filtrar y extraer diámetro
         df_plot = df_fil[~df_fil['Descripcion_Articulo'].str.startswith('HC')].copy()
         df_plot['Diametro'] = (
             df_plot['Descripcion_Articulo']
@@ -480,35 +481,54 @@ if response.status_code == 200:
             .fillna('Desconocido')
             .apply(lambda x: f"{x}MM" if x != 'Desconocido' else x)
         )
-        resumen_diam = (
-            df_plot
-            .groupby('Diametro')['Cant_Kg']
-            .sum()
-            .reset_index()
-            .sort_values('Cant_Kg', ascending=True)
-        )
+
+        # 2) Agregar métricas por diámetro
+        agg_diam = df_plot.groupby('Diametro').agg(
+            Cant_Kg=('Cant_Kg', 'sum'),
+            Corrida=('Corrida_Standar', 'sum'),
+            Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+            Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+        ).reset_index()
+
+        # 3) Calcular % productividad
+        agg_diam['Productividad'] = (
+            agg_diam['Corrida'] 
+            / (agg_diam['Tiempo_Corrida'] + agg_diam['Tiempo_Perdido'])
+        ) * 100
+
+        # 4) Ordenar ascendente para gráfico
+        agg_diam = agg_diam.sort_values('Cant_Kg', ascending=True)
 
         with col5:
             fig5, ax5 = plt.subplots(figsize=(6, 4))
-            colors_d = plt.cm.Pastel1(np.linspace(0, 1, len(resumen_diam)))
-            ax5.barh(
-                resumen_diam['Diametro'],
-                resumen_diam['Cant_Kg'],
+            colors_d = plt.cm.Pastel1(np.linspace(0, 1, len(agg_diam)))
+            bars = ax5.barh(
+                agg_diam['Diametro'],
+                agg_diam['Cant_Kg'],
                 color=colors_d,
                 edgecolor='white'
             )
+            # Anotar % productividad dentro de cada barra con texto negro para mejor contraste
+            for bar, prod in zip(bars, agg_diam['Productividad']):
+                ax5.text(
+                    bar.get_width() * 0.5,
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{prod:.1f}%",
+                    va='center', ha='center',
+                    color='black', fontsize=9, fontweight='bold'
+                )
             ax5.set_xlabel('Kg procesados', color='white')
             ax5.set_ylabel('Diámetro', color='white')
-            ax5.set_title('Kg por diámetro de cuerda', color='white')
+            ax5.set_title('Kg y % Productividad por diámetro', color='white')
             ax5.tick_params(axis='x', colors='white')
             ax5.tick_params(axis='y', colors='white')
             ax5.set_facecolor('#0e1117')
             fig5.patch.set_facecolor('#0e1117')
             st.pyplot(fig5)
 
-        # 2) Tabla de referencias y Kg (incluye todas, incluso HC)
+
         with col6:
-            st.markdown("#### 📋 Detalle por referencia")
+            st.markdown("#### 📋 Detalle por referencia", unsafe_allow_html=True)
             tabla_refs = (
                 df_fil
                 .groupby('Descripcion_Articulo')['Cant_Kg']
@@ -517,6 +537,7 @@ if response.status_code == 200:
                 .sort_values('Cant_Kg', ascending=False)
             )
             st.dataframe(tabla_refs, use_container_width=True)
+
 
         # --- SECCIÓN FINAL: Desempeño de operarios ---
         
@@ -666,3 +687,393 @@ if response.status_code == 200:
             agg_day['%_productividad'] = (agg_day['Corrida'] / (agg_day['Tiempo_Corrida'] + agg_day['Tiempo_Perdido'])) * 100
 
             fig2, ax2 = plt.subplots(figsize=(6, 4))
+            palette = plt.cm.tab10(np.linspace(0, 1, len(prod_daily.columns)))
+            prod_daily.plot(kind='bar', stacked=True, ax=ax2, color=palette, edgecolor='white')
+            ax2.set_xlabel('Fecha', color='white')
+            ax2.set_ylabel('Kg procesados', color='white')
+            ax2.tick_params(axis='x', rotation=45, colors='white')
+            ax2.tick_params(axis='y', colors='white')
+            ax2.set_facecolor('#0e1117')
+
+            ax3 = ax2.twinx()
+            line, = ax3.plot(
+                agg_day.index.astype(str),
+                agg_day['%_productividad'],
+                color='cyan', marker='o', linewidth=2,
+                label='% Productividad'
+            )
+            ax3.set_ylabel('% Productividad', color='cyan')
+            ax3.tick_params(axis='y', colors='cyan')
+
+            leg1 = ax2.legend(title='Grupo/Máquina', bbox_to_anchor=(1.02, 1), loc='upper left', frameon=True, facecolor='#0e1117', edgecolor='white')
+            for txt in leg1.get_texts(): txt.set_color('white')
+            leg1.get_title().set_color('white')
+            leg2 = ax3.legend(handles=[line], loc='lower left', frameon=True, facecolor='#0e1117', edgecolor='white')
+            for txt in leg2.get_texts(): txt.set_color('cyan')
+            fig2.patch.set_facecolor('#0e1117')
+
+            colA, colB = st.columns(2)
+            with colA:
+                st.pyplot(fig1)
+            with colB:
+                st.pyplot(fig2)
+
+            # --- Causas de paro y disponibilidad ---
+            st.markdown("## ⏱️ Análisis de paros y disponibilidad", unsafe_allow_html=True)
+            col3, col4 = st.columns(2)
+            with col3:
+                paro = df_filtrado.groupby('Causa_Paro')['Tiempo_Perdido'].sum().reset_index().sort_values('Tiempo_Perdido')
+                fig3, ax3 = plt.subplots(figsize=(6, 4))
+                colors_p = plt.cm.tab20c(np.linspace(0, 1, len(paro)))
+                ax3.barh(paro['Causa_Paro'], paro['Tiempo_Perdido'], color=colors_p, edgecolor='white')
+                ax3.set_xlabel('Horas perdidas', color='white')
+                ax3.set_ylabel('Causa de paro', color='white')
+                ax3.set_title('Tiempo de paro por causa', color='white')
+                ax3.tick_params(axis='x', colors='white')
+                ax3.tick_params(axis='y', colors='white')
+                ax3.set_facecolor('#0e1117')
+                fig3.patch.set_facecolor('#0e1117')
+                st.pyplot(fig3)
+            with col4:
+                df_filtrado['Horas_Disponibles'] = df_filtrado['Tiempo_Corrida'] + df_filtrado['Tiempo_Perdido']
+                disp = df_filtrado.groupby(['Fecha', df_filtrado['Maquina'].map(mapping)])['Horas_Disponibles'].sum().unstack(fill_value=0)
+                fig4, ax4 = plt.subplots(figsize=(6, 4))
+                palette2 = plt.cm.tab20(np.linspace(0, 1, disp.shape[1]))
+                disp.plot(kind='bar', stacked=True, ax=ax4, color=palette2, edgecolor='white')
+                ax4.set_xlabel('Fecha', color='white')
+                ax4.set_ylabel('Horas disponibles', color='white')
+                ax4.tick_params(axis='x', rotation=45, colors='white')
+                ax4.tick_params(axis='y', colors='white')
+                ax4.set_facecolor('#0e1117')
+                ax4.set_title('Disponibilidad diaria por grupo/máquina', color='white')
+                fig4.patch.set_facecolor('#0e1117')
+                st.pyplot(fig4)
+
+            # --- Desempeño de operarios ---
+            st.markdown("## 👥 Desempeño de operarios (Torsión)", unsafe_allow_html=True)
+            col7, col8 = st.columns(2)
+            cambios = df_filtrado[df_filtrado['Causa_Paro'] == 'CAMBIO DE REFERENCIA']
+            grp_c = cambios.groupby('Apellidos_Nombres').agg(
+                Num_Cambios=('Causa_Paro', 'count'),
+                Tiempo_Perdido_Cambio=('Tiempo_Perdido', 'sum')
+            )
+            prod = df_filtrado.groupby('Apellidos_Nombres').agg(
+                Cant_Kg=('Cant_Kg', 'sum'),
+                Corrida_Standar=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            )
+            df_perf = prod.join(grp_c, how='left').fillna({'Num_Cambios': 0, 'Tiempo_Perdido_Cambio': 0})
+            df_perf['prom_cambio'] = df_perf['Tiempo_Perdido_Cambio'] / df_perf['Num_Cambios'].replace(0, 1)
+            df_perf['Productividad'] = (df_perf['Corrida_Standar'] / (df_perf['Tiempo_Corrida'] + df_perf['Tiempo_Perdido'])) * 100
+            top5_df = df_perf.sort_values('Productividad', ascending=False).head(5)
+            others_df = df_perf.drop(top5_df.index)
+            top5 = top5_df.reset_index()
+            others = others_df.reset_index()
+            top5['Icono'] = '🏅'
+            others['Icono'] = '🔴'
+            with col7:
+                st.markdown("#### 🌟 Top 5 operarios por productividad", unsafe_allow_html=True)
+                st.dataframe(top5[['Icono','Apellidos_Nombres','Cant_Kg','Productividad']], use_container_width=True)
+            with col8:
+                st.markdown("#### ⚠️ Resto de operarios a evaluar", unsafe_allow_html=True)
+                st.dataframe(others[['Icono','Apellidos_Nombres','Cant_Kg','Productividad']], use_container_width=True)
+
+        
+        # nueva seccion productividad por denier
+        # --- Nueva sección: % Productividad por Denier ---
+        st.markdown("## 📈 % Productividad por Denier", unsafe_allow_html=True)
+
+        # Copiar el DataFrame filtrado y extraer Denier
+        df_den = df_filtrado.copy()
+        df_den['Denier'] = pd.to_numeric(
+            df_den['Descripcion_Articulo']
+          .str.extract(r'(\d{4,6})', expand=False),
+            errors='coerce'
+        )
+        df_den = df_den.dropna(subset=['Denier'])
+
+        # Agregar totales por Denier
+        agg_den = (
+            df_den
+            .groupby('Denier')
+            .agg(
+                Corrida=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida',   'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido',   'sum')
+            )
+            .reset_index()
+        )
+
+        # Calcular % productividad
+        agg_den['Productividad'] = (
+            agg_den['Corrida']
+            / (agg_den['Tiempo_Corrida'] + agg_den['Tiempo_Perdido'])
+        ) * 100
+
+        # Ordenar por productividad
+        agg_den = agg_den.sort_values('Productividad')
+
+        # Gráfico barras horizontales
+        fig_den, ax_den = plt.subplots(figsize=(8, 4))
+        ax_den.barh(
+            agg_den['Denier'].astype(str),
+            agg_den['Productividad'],
+            edgecolor='white'
+        )
+        ax_den.set_xlabel('% Productividad', color='white')
+        ax_den.set_ylabel('Denier', color='white')
+        ax_den.set_title('% Productividad por Denier', color='white')
+        ax_den.tick_params(axis='x', colors='white')
+        ax_den.tick_params(axis='y', colors='white')
+        fig_den.patch.set_facecolor('#0e1117')
+        ax_den.set_facecolor('#0e1117')
+
+        st.pyplot(fig_den)
+
+    ## Inicio seccion trenzado
+
+    elif pagina == "Trenzado":
+        st.subheader("🧶 Trenzado")
+    st.write("Aquí analizamos el proceso de trenzado.")
+
+    # 🎛️ Filtros
+    st.markdown("### 🎛️ Filtros")
+    col1, col2, col3, col4 = st.columns([2.5, 1.5, 1.5, 2])
+
+    with col1:
+        fechas = sorted(df_trenzado['Fecha_Efectiva'].dt.date.unique())
+        fecha_rango = st.date_input(
+            "📅 Rango de fechas:",
+            value=(fechas[0], fechas[-1])
+        )
+        fecha_inicio, fecha_fin = (
+            fecha_rango if isinstance(fecha_rango, tuple)
+            else (fecha_rango, fecha_rango)
+        )
+    with col2:
+        maquinas = ["Todas"] + sorted(df_trenzado['Maquina'].dropna().unique())
+        maquina_seleccionada = st.selectbox("🖨️ Máquina:", maquinas)
+    with col3:
+        turnos = ["Todos"] + sorted(df_trenzado['Turno'].dropna().unique())
+        turno_seleccionado = st.selectbox("🧭 Turno:", turnos)
+    with col4:
+        operarios = ["Todos"] + sorted(df_trenzado['Apellidos_Nombres'].dropna().unique())
+        operario_seleccionado = st.selectbox("👷 Operario:", operarios)
+
+    # Aplicar filtros y excluir TECH1–TECH4
+    df_fil = df_trenzado[
+        (df_trenzado['Fecha_Efectiva'].dt.date >= fecha_inicio) &
+        (df_trenzado['Fecha_Efectiva'].dt.date <= fecha_fin)
+    ].copy()
+    df_fil = df_fil[~df_fil['Maquina'].str.upper().isin(['TECH1','TECH2','TECH3','TECH4'])]
+    if maquina_seleccionada != "Todas":
+        df_fil = df_fil[df_fil['Maquina'] == maquina_seleccionada]
+    if turno_seleccionado != "Todos":
+        df_fil = df_fil[df_fil['Turno'] == turno_seleccionado]
+    if operario_seleccionado != "Todos":
+        df_fil = df_fil[df_fil['Apellidos_Nombres'] == operario_seleccionado]
+
+    if df_fil.empty:
+        st.warning("⚠️ No hay datos para los filtros seleccionados.")
+    else:
+        # --- Gráfico 1: Kg por máquina con productividad ---
+        agg_mach = df_fil.groupby('Maquina').agg(
+            Kg=('Cant_Kg','sum'),
+            Corrida=('Corrida_Standar','sum'),
+            Tiempo_Corrida=('Tiempo_Corrida','sum'),
+            Tiempo_Perdido=('Tiempo_Perdido','sum')
+        )
+        agg_mach['Productividad'] = (
+            agg_mach['Corrida'] /
+            (agg_mach['Tiempo_Corrida'] + agg_mach['Tiempo_Perdido'])
+        ) * 100
+        agg_mach = agg_mach.sort_values('Kg')
+
+        fig1, ax1 = plt.subplots(figsize=(6,4))
+        bars = ax1.barh(
+            agg_mach.index,
+            agg_mach['Kg'],
+            color='#66c2a5',
+            edgecolor='white'
+        )
+        ax1.set_xlabel("Kg procesados", color='white')
+        ax1.set_ylabel("Máquina", color='white')
+        ax1.set_title("Kg por máquina (Trenzado)", color='white')
+        ax1.tick_params(axis='x', colors='white')
+        ax1.tick_params(axis='y', colors='white')
+        ax1.set_facecolor('#0e1117')
+        fig1.patch.set_facecolor('#0e1117')
+        for bar, (_, row) in zip(bars, agg_mach.iterrows()):
+            w = bar.get_width()
+            ax1.text(
+                w * 0.02,
+                bar.get_y() + bar.get_height()/2,
+                f"{row['Productividad']:.1f}%",
+                va='center', color='white', fontsize=9
+            )
+
+        # --- Gráfico 2: Producción diaria + % productividad por máquina ---
+        df_fil['Fecha'] = df_fil['Fecha_Efectiva'].dt.date
+        prod_daily = (
+            df_fil
+            .groupby(['Fecha','Maquina'])['Cant_Kg']
+            .sum()
+            .unstack(fill_value=0)
+        )
+        agg_day = df_fil.groupby('Fecha').agg(
+            Corrida=('Corrida_Standar','sum'),
+            Tiempo_Corrida=('Tiempo_Corrida','sum'),
+            Tiempo_Perdido=('Tiempo_Perdido','sum')
+        )
+        agg_day['%_productividad'] = (
+            agg_day['Corrida'] /
+            (agg_day['Tiempo_Corrida'] + agg_day['Tiempo_Perdido'])
+        ) * 100
+
+        fig2, ax2 = plt.subplots(figsize=(6,4))
+        palette = plt.cm.tab10(np.linspace(0,1,prod_daily.shape[1]))
+        prod_daily.plot(
+            kind='bar', stacked=True,
+            ax=ax2, color=palette, edgecolor='white'
+        )
+        ax2.set_xlabel('Fecha', color='white')
+        ax2.set_ylabel('Kg procesados', color='white')
+        ax2.tick_params(axis='x', rotation=45, colors='white')
+        ax2.tick_params(axis='y', colors='white')
+        ax2.set_facecolor('#0e1117')
+
+        ax3 = ax2.twinx()
+        line, = ax3.plot(
+            agg_day.index.astype(str),
+            agg_day['%_productividad'],
+            color='cyan', marker='o', linewidth=2,
+            label='% Productividad'
+        )
+        ax3.set_ylabel('% Productividad', color='cyan')
+        ax3.tick_params(axis='y', colors='cyan')
+
+        leg1 = ax2.legend(
+            title='Máquinas', bbox_to_anchor=(1.02,1), loc='upper left',
+            frameon=True, facecolor='#0e1117', edgecolor='white'
+        )
+        for txt in leg1.get_texts(): txt.set_color('white')
+        leg1.get_title().set_color('white')
+        leg2 = ax3.legend(
+            handles=[line], loc='lower left',
+            frameon=True, facecolor='#0e1117', edgecolor='white'
+        )
+        for txt in leg2.get_texts(): txt.set_color('cyan')
+        fig2.patch.set_facecolor('#0e1117')
+
+        colA, colB = st.columns(2)
+        with colA:
+            st.pyplot(fig1)
+        with colB:
+            st.pyplot(fig2)
+
+        # --- Análisis de paros y disponibilidad ---
+        st.markdown("## ⏱️ Análisis de paros y disponibilidad", unsafe_allow_html=True)
+        col3, col4 = st.columns(2)
+
+        with col3:
+            paro = (
+                df_fil
+                .groupby('Causa_Paro')['Tiempo_Perdido']
+                .sum()
+                .reset_index()
+                .sort_values('Tiempo_Perdido')
+            )
+            fig3, ax3 = plt.subplots(figsize=(6,4))
+            colors_p = plt.cm.tab20c(np.linspace(0,1,len(paro)))
+            ax3.barh(
+                paro['Causa_Paro'],
+                paro['Tiempo_Perdido'],
+                color=colors_p,
+                edgecolor='white'
+            )
+            ax3.set_xlabel('Horas perdidas', color='white')
+            ax3.set_ylabel('Causa de paro', color='white')
+            ax3.set_title('Tiempo de paro por causa', color='white')
+            ax3.tick_params(axis='x', colors='white')
+            ax3.tick_params(axis='y', colors='white')
+            ax3.set_facecolor('#0e1117')
+            fig3.patch.set_facecolor('#0e1117')
+            st.pyplot(fig3)
+
+        with col4:
+            df_fil['Horas_Disponibles'] = df_fil['Tiempo_Corrida'] + df_fil['Tiempo_Perdido']
+            disp = df_fil.groupby(['Fecha','Maquina'])['Horas_Disponibles'].sum().unstack(fill_value=0)
+            fig4, ax4 = plt.subplots(figsize=(6,4))
+            palette2 = plt.cm.tab20(np.linspace(0,1,disp.shape[1]))
+            disp.plot(kind='bar', stacked=True, ax=ax4, color=palette2, edgecolor='white')
+            ax4.set_xlabel('Fecha', color='white')
+            ax4.set_ylabel('Horas disponibles', color='white')
+            ax4.tick_params(axis='x', rotation=45, colors='white')
+            ax4.tick_params(axis='y', colors='white')
+            ax4.set_facecolor('#0e1117')
+            ax4.set_title('Disponibilidad diaria por máquina', color='white')
+            fig4.patch.set_facecolor('#0e1117')
+            st.pyplot(fig4)
+
+        # --- Nueva sección: Kg y % Productividad por Diámetro ---
+        st.markdown("## 📊 Kg y % Productividad por Diámetro", unsafe_allow_html=True)
+        df_diam = df_fil.copy()
+        df_diam['Diametro'] = (
+            df_diam['Descripcion_Articulo']
+            .str.extract(r"(\d+)\s*MM", expand=False)
+            .fillna('Desconocido')
+            .apply(lambda x: f"{x}MM" if x!='Desconocido' else x)
+        )
+        agg_diam = df_diam.groupby('Diametro').agg(
+            Cant_Kg=('Cant_Kg','sum'),
+            Corrida=('Corrida_Standar','sum'),
+            Tiempo_Corrida=('Tiempo_Corrida','sum'),
+            Tiempo_Perdido=('Tiempo_Perdido','sum')
+        ).reset_index()
+        agg_diam['Productividad'] = (
+            agg_diam['Corrida'] /
+            (agg_diam['Tiempo_Corrida'] + agg_diam['Tiempo_Perdido'])
+        ) * 100
+        agg_diam = agg_diam.sort_values('Cant_Kg', ascending=True)
+
+        fig5, ax5 = plt.subplots(figsize=(6,4))
+        bars = ax5.barh(
+            agg_diam['Diametro'],
+            agg_diam['Cant_Kg'],
+            color='#66c2a5',
+            edgecolor='white'
+        )
+        for bar, prod in zip(bars, agg_diam['Productividad']):
+            ax5.text(
+                bar.get_width() * 0.5,
+                bar.get_y() + bar.get_height()/2,
+                f"{prod:.1f}%",
+                va='center', ha='center',
+                color='black', fontsize=9, fontweight='bold'
+            )
+        ax5.set_xlabel('Kg producidos', color='white')
+        ax5.set_ylabel('Diámetro', color='white')
+        ax5.set_title('Kg vs % Productividad por Diámetro', color='white')
+        ax5.tick_params(axis='x', colors='white')
+        ax5.tick_params(axis='y', colors='white')
+        ax5.set_facecolor('#0e1117')
+        fig5.patch.set_facecolor('#0e1117')
+        st.pyplot(fig5)
+
+        # --- Tabla de desempeño de operarios ---
+        st.markdown("## 👥 Desempeño de operarios (Trenzado)", unsafe_allow_html=True)
+        df_perf = df_fil.groupby('Apellidos_Nombres').agg(
+            Cant_Kg=('Cant_Kg','sum'),
+            Corrida=('Corrida_Standar','sum'),
+            Tiempo_Corrida=('Tiempo_Corrida','sum'),
+            Tiempo_Perdido=('Tiempo_Perdido','sum')
+        ).reset_index()
+        df_perf['%_productividad'] = (
+            df_perf['Corrida'] /
+            (df_perf['Tiempo_Corrida'] + df_perf['Tiempo_Perdido'])
+        ) * 100
+        df_perf = df_perf[['Apellidos_Nombres','Cant_Kg','%_productividad']]\
+                   .sort_values('%_productividad', ascending=False)\
+                   .reset_index(drop=True)
+        st.dataframe(df_perf, use_container_width=True)
