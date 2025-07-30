@@ -984,9 +984,9 @@ if response.status_code == 200:
                     .reset_index()
                     .sort_values('Tiempo_Perdido')
                 )
-                fig3, ax3 = plt.subplots(figsize=(6,4))
-                colors_p = plt.cm.tab20c(np.linspace(0,1,len(paro)))
-                ax3.barh(
+                    fig3, ax3 = plt.subplots(figsize=(6,4))
+                    colors_p = plt.cm.tab20c(np.linspace(0,1,len(paro)))
+                    ax3.barh(
                     paro['Causa_Paro'],
                     paro['Tiempo_Perdido'],
                     color=colors_p,
