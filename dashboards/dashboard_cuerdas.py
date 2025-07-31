@@ -1077,3 +1077,267 @@ if response.status_code == 200:
                     .sort_values('%_productividad', ascending=False)\
                     .reset_index(drop=True)
             st.dataframe(df_perf, use_container_width=True)
+
+    #Inicio seccion Embobina
+
+    elif pagina == "Embobina":
+        # inicio sección embobina
+        st.subheader("📦 Embobina")
+        st.write("Aquí analizamos el proceso de embobinado.")
+        # 🎛️ Filtros para embobina
+        st.markdown("### 🎛️ Filtros")
+
+        col1, col2, col3, col4 = st.columns([2.5, 1.5, 1.5, 2])
+
+        with col1:
+            fechas = pd.to_datetime(df_embobina['Fecha_Efectiva'].dt.date.unique())
+            fecha_rango = st.date_input(
+                "📅 Rango de fechas:",
+                value=(min(fechas), max(fechas))
+            )
+            fecha_inicio, fecha_fin = (
+                fecha_rango if isinstance(fecha_rango, tuple)
+                else (fecha_rango, fecha_rango)
+            )
+
+        with col2:
+            grupos_emb = {
+                'Rewinder': [f"RW{i}" for i in range(1, 29)],
+                'Ovillo Sima': ['OV1'],
+                'Ovillo Starlinger': [f"OVISTAR{i}" for i in range(1, 6)]
+            }
+            mapping_emb = {}
+            for grp, lst in grupos_emb.items():
+                for m in lst:
+                    mapping_emb[m] = grp
+            # cualquier máquina no listada queda por su nombre
+            for m in sorted(df_embobina['Maquina'].dropna().unique()):
+                if m not in mapping_emb:
+                    mapping_emb[m] = m
+            opciones_grupos = ['Todas'] + sorted(set(mapping_emb.values()))
+            maquina_seleccionada = st.selectbox("🖨️ Grupo/Máquina:", opciones_grupos)
+
+        with col3:
+            turnos = ["Todos"] + sorted(df_embobina['Turno'].dropna().unique())
+            turno_seleccionado = st.selectbox("🧭 Turno:", turnos)
+
+        with col4:
+            operarios = ["Todos"] + sorted(df_embobina['Apellidos_Nombres'].dropna().unique())
+            operario_seleccionado = st.selectbox("👷 Operario:", operarios)
+
+        # Aplicar filtros
+        df_filtrado = df_embobina[
+            (df_embobina['Fecha_Efectiva'].dt.date >= fecha_inicio) &
+            (df_embobina['Fecha_Efectiva'].dt.date <= fecha_fin)
+        ].copy()
+        if maquina_seleccionada != "Todas":
+            df_filtrado = df_filtrado[
+                df_filtrado['Maquina'].map(mapping_emb) == maquina_seleccionada
+                ]
+        if turno_seleccionado != "Todos":
+            df_filtrado = df_filtrado[df_filtrado['Turno'] == turno_seleccionado]
+        if operario_seleccionado != "Todos":
+            df_filtrado = df_filtrado[
+                df_filtrado['Apellidos_Nombres'] == operario_seleccionado
+            ]
+
+        if df_filtrado.empty:
+            st.warning("⚠️ No hay datos para los filtros seleccionados.")
+        else:
+            # --- Gráfico 1: Kg por grupo/máquina con productividad ---
+            agg = df_filtrado.groupby(
+                df_filtrado['Maquina'].map(mapping_emb)
+            ).agg(
+                Kg=('Cant_Kg', 'sum'),
+                Corrida=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            )
+            agg['Productividad'] = (
+                agg['Corrida']
+                / (agg['Tiempo_Corrida'] + agg['Tiempo_Perdido'])
+            ) * 100
+            agg = agg.sort_values('Kg')
+
+            fig1, ax1 = plt.subplots(figsize=(6, 4))
+            bars = ax1.barh(agg.index, agg['Kg'], color='#66c2a5', edgecolor='white')
+            ax1.set_xlabel("Kg procesados", color='white')
+            ax1.set_ylabel("Grupo/Máquina", color='white')
+            ax1.set_title("Kg por grupo/máquina (Embobina)", color='white')
+            ax1.tick_params(colors='white')
+            ax1.set_facecolor('#0e1117')
+            fig1.patch.set_facecolor('#0e1117')
+            for bar, (_, row) in zip(bars, agg.iterrows()):
+                w = bar.get_width()
+                ax1.text(
+                    w * 0.02,
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{row['Productividad']:.1f}%",
+                    va='center', color='white', fontsize=9
+                )
+
+            # --- Gráfico 2: Producción diaria + % productividad ---
+            df_filtrado['Fecha'] = df_filtrado['Fecha_Efectiva'].dt.date
+            prod_daily = df_filtrado.groupby(
+                ['Fecha', df_filtrado['Maquina'].map(mapping_emb)]
+            )['Cant_Kg'].sum().unstack(fill_value=0)
+            agg_day = df_filtrado.groupby('Fecha').agg(
+                Corrida=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            )
+            agg_day['%_productividad'] = (
+                agg_day['Corrida']
+                / (agg_day['Tiempo_Corrida'] + agg_day['Tiempo_Perdido'])
+            ) * 100
+
+            fig2, ax2 = plt.subplots(figsize=(6, 4))
+            palette = plt.cm.tab10(np.linspace(0, 1, len(prod_daily.columns)))
+            prod_daily.plot(
+                kind='bar', stacked=True, ax=ax2,
+                color=palette, edgecolor='white'
+            )
+            ax2.set_xlabel('Fecha', color='white')
+            ax2.set_ylabel('Kg procesados', color='white')
+            ax2.tick_params(axis='x', rotation=45, colors='white')
+            ax2.tick_params(axis='y', colors='white')
+            ax2.set_facecolor('#0e1117')
+
+            ax3 = ax2.twinx()
+            line, = ax3.plot(
+                agg_day.index.astype(str),
+                agg_day['%_productividad'],
+                color='cyan', marker='o', linewidth=2,
+                label='% Productividad'
+            )
+            ax3.set_ylabel('% Productividad', color='cyan')
+            ax3.tick_params(axis='y', colors='cyan')
+
+            leg1 = ax2.legend(
+                title='Grupo/Máquina',
+                bbox_to_anchor=(1.02, 1),
+                loc='upper left',
+                frameon=True,
+                facecolor='#0e1117',
+                edgecolor='white'
+            )
+            for txt in leg1.get_texts(): txt.set_color('white')
+            leg1.get_title().set_color('white')
+            leg2 = ax3.legend(
+                handles=[line],
+                loc='lower left',
+                frameon=True,
+                facecolor='#0e1117',
+                edgecolor='white'
+            )
+            for txt in leg2.get_texts(): txt.set_color('cyan')
+            fig2.patch.set_facecolor('#0e1117')
+
+            colA, colB = st.columns(2)
+            with colA:
+                st.pyplot(fig1)
+            with colB:
+                st.pyplot(fig2)
+
+            # --- Causas de paro y disponibilidad ---
+            st.markdown("## ⏱️ Análisis de paros y disponibilidad", unsafe_allow_html=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                paro = df_filtrado.groupby('Causa_Paro')['Tiempo_Perdido'] \
+                                .sum().reset_index().sort_values('Tiempo_Perdido')
+                fig3, ax4 = plt.subplots(figsize=(6, 4))
+                colors_p = plt.cm.tab20c(np.linspace(0, 1, len(paro)))
+                ax4.barh(paro['Causa_Paro'], paro['Tiempo_Perdido'],
+                        color=colors_p, edgecolor='white')
+                ax4.set_xlabel('Horas perdidas', color='white')
+                ax4.set_ylabel('Causa de paro', color='white')
+                ax4.set_facecolor('#0e1117')
+                fig3.patch.set_facecolor('#0e1117')
+                st.pyplot(fig3)
+            with c2:
+                df_filtrado['Horas_Disponibles'] = (
+                    df_filtrado['Tiempo_Corrida'] + df_filtrado['Tiempo_Perdido']
+                )
+                disp = df_filtrado.groupby(
+                    ['Fecha', df_filtrado['Maquina'].map(mapping_emb)]
+                )['Horas_Disponibles'].sum().unstack(fill_value=0)
+                fig4, ax5 = plt.subplots(figsize=(6, 4))
+                palette2 = plt.cm.tab20(np.linspace(0, 1, disp.shape[1]))
+                disp.plot(
+                    kind='bar', stacked=True, ax=ax5,
+                    color=palette2, edgecolor='white'
+                )
+                ax5.set_xlabel('Fecha', color='white')
+                ax5.set_ylabel('Horas disponibles', color='white')
+                ax5.set_title('Disponibilidad diaria (Embobina)', color='white')
+                ax5.tick_params(axis='x', rotation=45, colors='white')
+                ax5.tick_params(axis='y', colors='white')
+                ax5.set_facecolor('#0e1117')
+                fig4.patch.set_facecolor('#0e1117')
+                st.pyplot(fig4)
+
+            # --- Desempeño de operarios ---
+            st.markdown("## 👥 Desempeño de operarios (Embobina)", unsafe_allow_html=True)
+            d1, d2 = st.columns(2)
+            cambios = df_filtrado[df_filtrado['Causa_Paro'] == 'CAMBIO DE REFERENCIA']
+            grp_c = cambios.groupby('Apellidos_Nombres').agg(
+                Num_Cambios=('Causa_Paro', 'count'),
+                Tiempo_Perdido_Cambio=('Tiempo_Perdido', 'sum')
+            )
+            prod = df_filtrado.groupby('Apellidos_Nombres').agg(
+                Cant_Kg=('Cant_Kg', 'sum'),
+                Corrida_Standar=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            )
+            df_perf = prod.join(grp_c, how='left').fillna({'Num_Cambios': 0, 'Tiempo_Perdido_Cambio': 0})
+            df_perf['prom_cambio'] = df_perf['Tiempo_Perdido_Cambio'] / df_perf['Num_Cambios'].replace(0, 1)
+            df_perf['Productividad'] = (
+                df_perf['Corrida_Standar']
+                / (df_perf['Tiempo_Corrida'] + df_perf['Tiempo_Perdido'])
+         ) * 100
+
+            top5_df = df_perf.sort_values('Productividad', ascending=False).head(5)
+            others_df = df_perf.drop(top5_df.index)
+            top5 = top5_df.reset_index(); others = others_df.reset_index()
+            top5['Icono'] = '🏅'; others['Icono'] = '🔴'
+
+            with d1:
+                st.markdown("#### 🌟 Top 5 operarios por productividad", unsafe_allow_html=True)
+                st.dataframe(
+                    top5[['Icono', 'Apellidos_Nombres', 'Cant_Kg', 'Productividad']],
+                    use_container_width=True
+                )
+            with d2:
+                st.markdown("#### ⚠️ Resto de operarios a evaluar", unsafe_allow_html=True)
+                st.dataframe(
+                    others[['Icono', 'Apellidos_Nombres', 'Cant_Kg', 'Productividad']],
+                    use_container_width=True
+                )
+
+            # Opcional: sección % productividad por Denier (igual que en Torsión)
+            st.markdown("## 📈 % Productividad por Denier", unsafe_allow_html=True)
+            df_den = df_filtrado.copy()
+            df_den['Denier'] = pd.to_numeric(
+                df_den['Descripcion_Articulo'].str.extract(r'(\d{4,6})', expand=False),
+                errors='coerce'
+            ).dropna()
+            agg_den = df_den.groupby('Denier').agg(
+                Corrida=('Corrida_Standar', 'sum'),
+                Tiempo_Corrida=('Tiempo_Corrida', 'sum'),
+                Tiempo_Perdido=('Tiempo_Perdido', 'sum')
+            ).reset_index()
+            agg_den['Productividad'] = (
+                agg_den['Corrida'] / (agg_den['Tiempo_Corrida'] + agg_den['Tiempo_Perdido'])
+            ) * 100
+            agg_den = agg_den.sort_values('Productividad')
+
+            fig_den, ax_den = plt.subplots(figsize=(8, 4))
+            ax_den.barh(agg_den['Denier'].astype(str), agg_den['Productividad'], edgecolor='white')
+            ax_den.set_xlabel('% Productividad', color='white')
+            ax_den.set_ylabel('Denier', color='white')
+            ax_den.set_title('% Productividad por Denier (Embobina)', color='white')
+            ax_den.tick_params(colors='white')
+            ax_den.set_facecolor('#0e1117')
+            fig_den.patch.set_facecolor('#0e1117')
+            st.pyplot(fig_den)
