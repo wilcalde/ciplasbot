@@ -1,0 +1,20 @@
+# 🔐 Secretos
+.env
+*.env
+.env.*
+# Si no quieres subir datos sensibles:
+config/users.json
+config/tasks.json
+
+# 🗂️ Datos generados/temporales
+config/*_session.json
+config/history/
+config/supervision_responses/
+
+# 🐍 Python
+__pycache__/
+*.pyc
+venv/
+
+# Otros
+.DS_Store

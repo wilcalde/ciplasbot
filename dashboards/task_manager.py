@@ -8,12 +8,15 @@ import streamlit as st
 # ==============================
 # Config y rutas
 # ==============================
+st.set_page_config(page_title="🗂️ Task Manager CiplasBot Wilson Calderon", layout="wide")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.normpath(os.path.join(BASE_DIR, "../config"))
 TASKS_FILE = os.path.join(CONFIG_DIR, "tasks.json")
 
-# Tema oscuro básico
-st.set_page_config(page_title="🗂️ Task Manager CiplasBot", layout="wide")
+# ==============================
+# Estilos (tema oscuro)
+# ==============================
 st.markdown("""
 <style>
     html, body, [data-testid="stApp"] { background-color: #0e0f14; color: #eaeef3; }
@@ -44,28 +47,49 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================
+# Compatibilidad rerun
+# ==============================
+def _rerun():
+    try:
+        st.rerun()
+    except AttributeError:
+        # Compatibilidad con versiones antiguas
+        st.experimental_rerun()
+
+# ==============================
 # Utilidades
 # ==============================
 def _ensure_files():
     os.makedirs(CONFIG_DIR, exist_ok=True)
     if not os.path.exists(TASKS_FILE):
-        with open(TASKS_FILE, "w", encoding="utf-8") as f:
-            json.dump({"tasks": []}, f, ensure_ascii=False, indent=2)
+        try:
+            with open(TASKS_FILE, "w", encoding="utf-8") as f:
+                json.dump({"tasks": []}, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            st.error(f"No se pudo crear {TASKS_FILE}: {e}")
 
 def _load_tasks() -> List[Dict[str, Any]]:
     _ensure_files()
-    with open(TASKS_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    tasks = data.get("tasks", [])
+    try:
+        with open(TASKS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        tasks = data.get("tasks", [])
+    except Exception as e:
+        st.error(f"No se pudo leer {TASKS_FILE}: {e}")
+        tasks = []
+
     # normaliza campos esperados
     for t in tasks:
         t.setdefault("status", "pendiente")
         t.setdefault("comments", [])
     return tasks
 
-def _save_tasks(tasks: List[Dict[str, Any]]):
-    with open(TASKS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"tasks": tasks}, f, ensure_ascii=False, indent=2)
+def _save_tasks(tasks: List[dict]):
+    try:
+        with open(TASKS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"tasks": tasks}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"No se pudo guardar {TASKS_FILE}: {e}")
 
 def _find_index(tasks: List[Dict[str, Any]], tid: str) -> int:
     for i, t in enumerate(tasks):
@@ -105,6 +129,14 @@ def _overdue(due_iso: str | None) -> bool:
     except Exception:
         return False
 
+def _safe_date_value(due_iso: str | None) -> date:
+    try:
+        if due_iso:
+            return date.fromisoformat(due_iso)
+    except Exception:
+        pass
+    return date.today()
+
 # ==============================
 # Acciones sobre tareas
 # ==============================
@@ -113,7 +145,7 @@ def action_mark_done(tid: str):
     i = _find_index(tasks, tid)
     if i >= 0:
         tasks[i]["status"] = "hecha"
-        tasks[i].setdefault("updated_at", datetime.now().isoformat())
+        tasks[i]["updated_at"] = datetime.now().isoformat()
         _save_tasks(tasks)
 
 def action_reopen(tid: str):
@@ -121,7 +153,7 @@ def action_reopen(tid: str):
     i = _find_index(tasks, tid)
     if i >= 0:
         tasks[i]["status"] = "pendiente"
-        tasks[i].setdefault("updated_at", datetime.now().isoformat())
+        tasks[i]["updated_at"] = datetime.now().isoformat()
         _save_tasks(tasks)
 
 def action_delete(tid: str):
@@ -138,14 +170,14 @@ def action_reschedule(tid: str, new_due: date):
         _save_tasks(tasks)
 
 def action_add_comment(tid: str, author: str, comment: str):
-    if not comment.strip():
+    if not (comment or "").strip():
         return
     tasks = _load_tasks()
     i = _find_index(tasks, tid)
     if i >= 0:
         tasks[i].setdefault("comments", [])
         tasks[i]["comments"].append({
-            "author": author or "Usuario",
+            "author": (author or "Usuario").strip(),
             "text": comment.strip(),
             "ts": datetime.now().isoformat()
         })
@@ -271,11 +303,12 @@ def render_task_card(t: Dict[str, Any]):
 
     with cols[2]:
         st.caption("Reprogramar fecha")
-        new_due = st.date_input(" ", key=f"due_{tid}", value=(date.fromisoformat(t.get('due_date')) if t.get('due_date') else date.today()))
+        current_value = _safe_date_value(t.get('due_date'))
+        new_due = st.date_input(" ", key=f"due_{tid}", value=current_value)
         if st.button("💾 Reprogramar", key=f"resched_{tid}"):
             action_reschedule(tid, new_due)
             st.success("Fecha actualizada.")
-            st.experimental_rerun()
+            _rerun()
 
     with cols[3]:
         st.caption("Estado")
@@ -283,19 +316,19 @@ def render_task_card(t: Dict[str, Any]):
             if st.button("✅ Marcar hecha", key=f"done_{tid}"):
                 action_mark_done(tid)
                 st.success("Tarea completada.")
-                st.experimental_rerun()
+                _rerun()
         else:
             if st.button("↩️ Reabrir", key=f"reopen_{tid}"):
                 action_reopen(tid)
                 st.info("Tarea reabierta.")
-                st.experimental_rerun()
+                _rerun()
 
     with cols[4]:
         st.caption("Eliminar")
         if st.button("🗑️ Eliminar", key=f"del_{tid}"):
             action_delete(tid)
             st.warning("Tarea eliminada.")
-            st.experimental_rerun()
+            _rerun()
 
     # Comentarios
     st.divider()
@@ -317,7 +350,7 @@ def render_task_card(t: Dict[str, Any]):
         if st.button("➕ Agregar", key=f"c_add_{tid}"):
             action_add_comment(tid, author, msg)
             st.success("Comentario agregado.")
-            st.experimental_rerun()
+            _rerun()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -374,20 +407,20 @@ with st.sidebar.form("quick_add"):
     q_creator = st.text_input("Creador", value="Administrador")
     submitted = st.form_submit_button("Crear tarea")
     if submitted:
-        tasks = _load_tasks()
+        tasks_now = _load_tasks()
         new_task = {
             "id": datetime.now().strftime("T%Y%m%d%H%M%S%f"),
-            "name": q_name.strip() or "Tarea sin nombre",
+            "name": (q_name or "").strip() or "Tarea sin nombre",
             "due_date": q_due.isoformat(),
             "priority": q_prio,
-            "process": q_proc.strip() or "General",
+            "process": (q_proc or "").strip() or "General",
             "status": "pendiente",
             "created_at": datetime.now().isoformat(),
             "created_by_phone": "",
-            "created_by": q_creator.strip() or "Administrador",
+            "created_by": (q_creator or "").strip() or "Administrador",
             "comments": []
         }
-        tasks.append(new_task)
-        _save_tasks(tasks)
+        tasks_now.append(new_task)
+        _save_tasks(tasks_now)
         st.success("Tarea creada.")
-        st.experimental_rerun()
+        _rerun()
