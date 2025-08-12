@@ -1,54 +1,113 @@
+# main.py
 from fastapi import FastAPI
 from pydantic import BaseModel
 from services.prompts import get_prompt, get_flow
 from services.whatsapp_service import send_whatsapp_message
-from services.session_memory import sessions
+from services.session_memory import sessions, CONFIG_DIR, SUPERVISORS_FILE
 import json
 import os
+import re
 import requests
 import datetime
 from openai import OpenAI
 
-from workflows.supervision_questions import handle_response, load_supervision_session_if_exists
+# Flujos de supervisión
 from workflows.daily_report import update_alert_status, check_alert_already_sent, get_admin_phone
+from workflows.supervision_questions import (
+    handle_response,
+    load_supervision_session_if_exists,
+    send_supervision_questions,
+    ask_supervision_questions
+)
+
+# Gestor de tareas
+from workflows.tasks_manager import (
+    start_new_task_flow,
+    handle_task_flow_response,
+    has_active_task_flow,
+)
 
 app = FastAPI()
 
-# 📂 Directorios base
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
-HISTORY_DIR = os.path.join(CONFIG_DIR, "history")
-TASKS_DIR = os.path.join(BASE_DIR, "tasks")
-os.makedirs(HISTORY_DIR, exist_ok=True)
+# 📂 Directorio de tareas (opcional; no se usa para almacenamiento principal)
+TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks")
+
+# Asegurar carpeta CONFIG_DIR existe
+os.makedirs(CONFIG_DIR, exist_ok=True)
 
 WEBHOOK_URL = "https://hook.make.com/tu_webhook"  # 👉 Reemplaza con tu URL real
 
 # 🧠 Cliente OpenAI
 client = OpenAI()
 
-def respuesta_inteligente(texto, nombre, numero):
-    if texto.lower() == "tareas" or "tareas del día" in texto.lower():
+
+# =========================
+# Utilidades
+# =========================
+
+def normalize_phone(p: str) -> str:
+    """
+    Deja solo dígitos en el número para que coincida con el usado en archivos de sesión.
+    Ej: '+57 317-638-0061' -> '573176380061'
+    """
+    if not p:
+        return ""
+    return re.sub(r"\D", "", p)
+
+def get_user_name_by_phone(phone_digits: str) -> str:
+    """
+    Busca el nombre en SUPERVISORS_FILE por 'phone' (normalizado a dígitos).
+    """
+    try:
+        with open(SUPERVISORS_FILE, encoding="utf-8") as f:
+            users_data = json.load(f)
+        for user in users_data.get("users", []):
+            u_phone = normalize_phone(user.get("phone", ""))
+            if u_phone == phone_digits:
+                return user.get("name", "usuario")
+    except Exception as e:
+        print(f"⚠️ No se pudo leer SUPERVISORS_FILE para nombre: {e}")
+    return "usuario"
+
+
+def respuesta_inteligente(texto: str, nombre: str, numero: str) -> str:
+    """
+    Respuestas por defecto (IA general) + atajos de tareas para casos donde se llame
+    esta función directamente desde otros flujos.
+    """
+    texto_low = (texto or "").strip().lower()
+
+    # ——— Integración tareas (redundante a endpoint, por seguridad) ———
+    if texto_low.startswith("/nueva_tarea"):
+        start_new_task_flow(numero)
+        return "OK"
+
+    if has_active_task_flow(numero):
+        handle_task_flow_response(numero, texto)
+        return "OK"
+    # ————————————————————————————————————————————————————————————————
+
+    # Atajo simple “tareas del día” (legacy)
+    if texto_low in ("tareas", "tareas del día", "tareas del dia"):
         archivo_tareas = os.path.join(TASKS_DIR, f"{nombre.lower()}.json")
         if os.path.exists(archivo_tareas):
             with open(archivo_tareas, encoding="utf-8") as f:
                 tareas = json.load(f)
-                hoy = datetime.datetime.now().strftime("%Y-%m-%d")
-                lista = tareas.get(hoy)
-                if lista:
-                    mensaje = f"📋 *Tareas asignadas para hoy:*\n" + "\n".join([f"✅ {t}" for t in lista])
-                else:
-                    mensaje = "📭 Hoy no tienes tareas asignadas."
-        else:
-            mensaje = "⚠️ No encontré un archivo de tareas para ti."
-        return mensaje
+            hoy = datetime.datetime.now().strftime("%Y-%m-%d")
+            lista = tareas.get(hoy)
+            if lista:
+                lineas = "\n".join([f"✅ {t}" for t in lista])
+                return f"📋 *Tareas asignadas para hoy:*\n{lineas}"
+        return "📭 Hoy no tienes tareas asignadas."
 
-    prompt_sistema = f"""
-Eres un asistente virtual llamado CiplasBot. Tu tarea es responder con amabilidad y precisión al usuario {nombre}, quien trabaja en la planta de producción de Ciplas S.A.S. 
-No tienes flujo activo en este momento, pero puedes responder preguntas generales sobre procesos, producción, dudas comunes o instrucciones simples.
-
-Si no sabes la respuesta, responde con:
-'Lo siento, por ahora no tengo información sobre ese tema. Puedes escribir "ayuda" para ver opciones disponibles.'
-"""
+    # IA general
+    prompt_sistema = (
+        f"Eres un asistente virtual llamado CiplasBot. Tu tarea es responder con amabilidad y precisión al usuario {nombre}, "
+        "quien trabaja en la planta de producción de Ciplas S.A.S. No tienes flujo activo en este momento, "
+        "pero puedes responder preguntas generales sobre procesos, producción, dudas comunes o instrucciones simples. "
+        "Si no sabes la respuesta, responde con: 'Lo siento, por ahora no tengo información sobre ese tema. "
+        "Puedes escribir \"ayuda\" para ver opciones disponibles.'"
+    )
     try:
         chat = client.chat.completions.create(
             model="o4-mini",
@@ -62,140 +121,208 @@ Si no sabes la respuesta, responde con:
         print("❌ Error al generar respuesta con OpenAI:", e)
         return "Lo siento, estoy teniendo dificultades para procesar tu mensaje. Intenta más tarde."
 
+
 class WhatsAppMessage(BaseModel):
     phone: str
-    message: str
+    message: str | None = None   # puede venir null si el usuario envía media
+
 
 @app.post("/ciplasbot")
 async def handle_ciplasbot(payload: WhatsAppMessage):
-    numero = payload.phone
-    texto = payload.message.strip()
+    # 🔢 Normaliza número entrante
+    numero = normalize_phone(payload.phone)
 
-    # ✅ Cargar sesión de supervisión desde disco si no está en memoria
+    # 🗣️ Extrae texto (puede venir None si es media/archivo)
+    texto = (payload.message or "").strip()
+    texto_low = texto.lower()
+
+    # Si no hay texto (audio/imagen/documento), pedir texto y salir sin romper el flujo
+    if not isinstance(texto, str) or texto == "":
+        try:
+            send_whatsapp_message(
+                numero,
+                "🙏 Para registrar tu respuesta necesito un *mensaje de texto*. ¿Puedes escribirlo, por favor?"
+            )
+        except Exception as e:
+            print(f"❌ Error enviando aviso de texto requerido a {numero}: {e}")
+        return {"status": "ok", "detail": "no text content; user prompted"}
+
+    # ——————————————————————————————————————————————
+    # 0) FLUJO DE TAREAS (tiene prioridad y se procesa antes de otros)
+    # ——————————————————————————————————————————————
+    if texto_low.startswith("/nueva_tarea"):
+        # Valida admin internamente y abre flujo
+        start_new_task_flow(numero)
+        return {"status": "ok", "detail": "task_flow_started"}
+
+    if has_active_task_flow(numero):
+        handle_task_flow_response(numero, texto)
+        return {"status": "ok", "detail": "task_flow_progress"}
+    # ——————————————————————————————————————————————
+
+    # 1️⃣ Cargar sesión de supervisión si existe en disco
     if numero not in sessions:
         load_supervision_session_if_exists(numero)
 
-    # 🚩 1️⃣ Si el número tiene sesión activa tipo supervisión
+    # 2️⃣ Flujo supervisión
     if numero in sessions and sessions[numero].get("process") == "SUPERVISION":
         handle_response(numero, texto)
         return {"status": "ok", "detail": "handled by supervision_questions"}
 
-    # 🚩 2️⃣ Flujo tradicional basado en archivo JSON por sesión
+    # 3️⃣ Flujo tradicional por sesión JSON
     session_file = os.path.join(CONFIG_DIR, f"{numero}_session.json")
     session = sessions.get(numero)
 
+    # Si no hay sesión en memoria, intenta cargar desde archivo
     if not session:
         if os.path.exists(session_file):
-            with open(session_file, encoding="utf-8") as f:
-                session = json.load(f)
-            sessions[numero] = session  # 💾 Cargar en memoria
+            print("🔍 Cargando sesión desde archivo:", session_file)
+            try:
+                with open(session_file, encoding="utf-8") as f:
+                    session = json.load(f)
+                sessions[numero] = session
+            except Exception as e:
+                print(f"❌ Error cargando sesión desde archivo: {e}")
+                session = None
         else:
-            # 🧠 RESPUESTA INTELIGENTE SIN FLUJO ACTIVO
-            user_file = os.path.join(CONFIG_DIR, "users.json")
-            nombre = "usuario"
-            if os.path.exists(user_file):
-                with open(user_file, encoding="utf-8") as f:
-                    users_data = json.load(f)
-                    for user in users_data.get("users", []):
-                        if user.get("phone") == numero:
-                            nombre = user.get("name", "usuario")
-                            break
-
+            # Sin flujo activo -> IA general
+            nombre = get_user_name_by_phone(numero)
             respuesta = respuesta_inteligente(texto, nombre, numero)
-            send_whatsapp_message(numero, respuesta)
+            try:
+                send_whatsapp_message(numero, respuesta)
+            except Exception as e:
+                print(f"❌ Error enviando respuesta general a {numero}: {e}")
             return {"status": "no_flow", "reply": respuesta}
 
+    # Validación de flujo
     flow = session.get("flow", [])
+    step_index = session.get("step_index", 0)
 
-    # 🛡 Validar que el índice esté dentro del rango del flujo
-    if not flow or session["step_index"] >= len(flow):
+    if not flow or step_index >= len(flow):
         reply = "✅ Ya completaste todas las preguntas. Si deseas empezar de nuevo, escribe /start o espera el próximo cuestionario."
-        send_whatsapp_message(numero, reply)
+        try:
+            send_whatsapp_message(numero, reply)
+        except Exception as e:
+            print(f"❌ Error enviando mensaje de flujo finalizado a {numero}: {e}")
+        # Limpieza suave en memoria; NO borra archivo si quieres mantenerlo
         sessions.pop(numero, None)
-        if os.path.exists(session_file):
-            os.remove(session_file)
         return {"status": "done", "detail": "flow completed or index out of range"}
 
-    current_step = flow[session["step_index"]]
+    current_step = flow[step_index]
 
-    # ✅ 3️⃣ Detectar comando EDITAR
+    # 4️⃣ Modo edición
     if texto.strip().upper() == "EDITAR":
-        lines = []
-        for idx, step in enumerate(flow):
-            respuesta = session["answers"].get(step, "❌ Sin respuesta")
-            lines.append(f"{idx+1}️⃣ {step}: {respuesta}")
+        # Muestra el listado con lo que hay (si no hay respuesta, marca ❌)
+        answers = session.get("answers", {})
+        lines = [
+            f"{idx+1}️⃣ {step}: {answers.get(step, '❌ Sin respuesta')}"
+            for idx, step in enumerate(flow)
+        ]
         listado = "\n".join(lines)
-        reply = f"📋 *Tus respuestas actuales:*\n{listado}\n\n👉 Escribe el número de la pregunta que deseas corregir."
+        reply = (
+            f"📋 *Tus respuestas actuales:*\n{listado}\n\n"
+            f"👉 Escribe el número de la pregunta que deseas corregir."
+        )
         session["editing"] = True
         sessions[numero] = session
-        with open(session_file, "w", encoding="utf-8") as f:
-            json.dump(session, f, indent=2, ensure_ascii=False)
-        send_whatsapp_message(numero, reply)
+        try:
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump(session, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"❌ Error guardando sesión (modo edición): {e}")
+        try:
+            send_whatsapp_message(numero, reply)
+        except Exception as e:
+            print(f"❌ Error enviando listado de edición a {numero}: {e}")
         return {"status": "ok", "mode": "editing", "reply": reply}
 
-    # ✅ 4️⃣ Si está en modo edición
     if session.get("editing"):
         try:
-            selected = int(texto.strip()) - 1
-            if selected < 0 or selected >= len(flow):
+            sel = int(texto.strip()) - 1
+            if sel < 0 or sel >= len(flow):
                 reply = "⚠️ Número inválido. Escribe un número válido de la lista."
             else:
-                session["step_index"] = selected
-                step = flow[selected]
-                if step in session["answers"]:
-                    session["answers"].pop(step)
-                reply = f"✏️ Corrige por favor: {get_prompt(step, session['process'])}"
+                session["step_index"] = sel
+                session["answers"].pop(flow[sel], None)  # elimina respuesta previa de esa pregunta
+                reply = f"✏️ Corrige por favor: {get_prompt(flow[sel], session['process'])}"
                 session.pop("editing", None)
         except ValueError:
             reply = "⚠️ Por favor, escribe solo el número de la pregunta a corregir."
-
         sessions[numero] = session
-        with open(session_file, "w", encoding="utf-8") as f:
-            json.dump(session, f, indent=2, ensure_ascii=False)
-        send_whatsapp_message(numero, reply)
+        try:
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump(session, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"❌ Error guardando sesión (selección de edición): {e}")
+        try:
+            send_whatsapp_message(numero, reply)
+        except Exception as e:
+            print(f"❌ Error enviando prompt de corrección a {numero}: {e}")
         return {"status": "ok", "mode": "editing", "reply": reply}
 
-    # ✅ 5️⃣ Última pregunta o paso normal
-    session["answers"][current_step] = texto
-    session["step_index"] += 1
+    # 5️⃣ Registrar respuesta del paso actual y avanzar
+    session_answers = session.get("answers", {})
+    if not isinstance(session_answers, dict):
+        session_answers = {}
+    session["answers"] = session_answers
 
-    if session["step_index"] < len(flow):
-        next_step = flow[session["step_index"]]
-        reply = get_prompt(next_step, session["process"])
-    else:
-        # 📨 Enviar informe final
-        report_payload = {"process": session["process"], "answers": session["answers"]}
+    # 💾 Guardar ANTES de incrementar (evita perder la última respuesta)
+    session['answers'][current_step] = texto
+    session['step_index'] = step_index + 1
+
+    # ¿Quedan más preguntas?
+    if session['step_index'] < len(flow):
+        reply = get_prompt(flow[session['step_index']], session['process'])
+
+        # Guardar progreso intermedio en memoria y disco
+        sessions[numero] = session
         try:
-            response = requests.post(WEBHOOK_URL, json=report_payload)
-            print(f"📤 Informe enviado a Make: {response.status_code}")
+            with open(session_file, "w", encoding="utf-8") as f:
+                json.dump(session, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"❌ Error enviando a Make: {e}")
+            print(f"❌ Error guardando progreso de sesión: {e}")
 
-        # 💾 Guardar historial
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        history_file = os.path.join(HISTORY_DIR, f"{numero}_history_{timestamp}.json")
-        with open(history_file, "w", encoding="utf-8") as f:
-            json.dump(report_payload, f, indent=2, ensure_ascii=False)
+        # Enviar siguiente pregunta
+        try:
+            send_whatsapp_message(numero, reply)
+        except Exception as e:
+            print(f"❌ Error enviando siguiente pregunta a {numero}: {e}")
+        return {"status": "ok", "step": session.get("step_index"), "reply": reply}
 
-        # ✅ Alerta de informe completado
-        update_alert_status(numero, "completed_alert_sent")
-        admin_phone = get_admin_phone()
-        if admin_phone:
-            admin_msg = f"✅ *Informe completado:*\nEl supervisor *{numero}* ya completó su informe diario."
-            send_whatsapp_message(admin_phone, admin_msg)
+    # 🏁 Última respuesta: enviar a Make y notificar
+    report_payload = {"process": session['process'], "answers": session['answers']}
+    try:
+        response = requests.post(WEBHOOK_URL, json=report_payload)
+        print(f"📤 Informe enviado a Make: {response.status_code}")
+    except Exception as e:
+        print(f"❌ Error enviando a Make: {e}")
 
-        # 🧹 Limpiar sesión
-        sessions.pop(numero, None)
-        if os.path.exists(session_file):
-            os.remove(session_file)
+    # Notificar completado al admin
+    update_alert_status(numero, "completed_alert_sent")
+    admin_phone = get_admin_phone()
+    if admin_phone:
+        try:
+            nombre = get_user_name_by_phone(numero)
+            send_whatsapp_message(
+                admin_phone,
+                f"✅ *Informe completado:*\nEl supervisor *{nombre}* ({numero}) completó su informe diario."
+            )
+        except Exception as e:
+            print(f"❌ Error notificando al admin: {e}")
 
-        reply = "✅ Gracias. Toda la información ha sido registrada y enviada a gerencia. 🙌"
-        send_whatsapp_message(numero, reply)
-        return {"status": "ok", "detail": "done"}
-
-    # 💾 Guardar progreso intermedio
+    # Guardar sesión final (no borrar archivo si deseas conservarlo)
     sessions[numero] = session
-    with open(session_file, "w", encoding="utf-8") as f:
-        json.dump(session, f, indent=2, ensure_ascii=False)
-    send_whatsapp_message(numero, reply)
-    return {"status": "ok", "step": session.get("step_index"), "reply": reply}
+    try:
+        with open(session_file, "w", encoding="utf-8") as f:
+            json.dump(session, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"❌ Error guardando sesión final: {e}")
+
+    # Agradecimiento al supervisor
+    reply = "✅ Gracias. Toda la información ha sido registrada y enviada a gerencia. 🙌"
+    try:
+        send_whatsapp_message(numero, reply)
+    except Exception as e:
+        print(f"❌ Error enviando confirmación final a {numero}: {e}")
+
+    return {"status": "ok", "detail": "done"}

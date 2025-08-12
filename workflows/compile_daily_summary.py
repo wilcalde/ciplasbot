@@ -5,12 +5,7 @@ from openai import OpenAI
 import requests
 
 from services.whatsapp_service import send_whatsapp_message
-
-# 📂 Rutas base
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.join(BASE_DIR, "../config")
-HISTORY_DIR = os.path.join(CONFIG_DIR, "history")
-USERS_FILE = os.path.join(CONFIG_DIR, "users.json")
+from services.session_memory import CONFIG_DIR, SUPERVISORS_FILE, ALERT_LOG_FILE
 
 # 🌐 Webhook Make
 WEBHOOK_URL = "https://hook.us2.make.com/k2vr3eevsu1sc1l60lkqtnmdegdemfpa"
@@ -18,124 +13,107 @@ WEBHOOK_URL = "https://hook.us2.make.com/k2vr3eevsu1sc1l60lkqtnmdegdemfpa"
 # 🧠 Cliente OpenAI
 client = OpenAI()
 
+
 def get_admin_data():
-    with open(USERS_FILE, encoding="utf-8") as f:
+    """
+    Lee users.json y retorna nombre y teléfono del administrador.
+    """
+    with open(SUPERVISORS_FILE, encoding="utf-8") as f:
         data = json.load(f)
-        for user in data.get("users", []):
-            if user.get("role", "").lower() == "administrador":
-                return {"name": user["name"], "phone": user["phone"]}
+    for user in data.get("users", []):
+        if user.get("role", "").lower() == "administrador":
+            return {"name": user["name"], "phone": user["phone"]}
     raise ValueError("⚠️ No se encontró usuario administrador en users.json")
 
-def compile_daily_summary():
-    today = datetime.now().strftime("%Y%m%d")
-    raw_blocks = []
 
-    # ✅ Busca sesiones vivas en CONFIG_DIR
-    for file in os.listdir(CONFIG_DIR):
-        if file.endswith("_session.json"):
-            path = os.path.join(CONFIG_DIR, file)
+def compile_daily_summary():
+    """
+    Compila los reportes JSON de varios supervisores, genera un email resumen con OpenAI,
+    envía a Make y notifica por WhatsApp.
+    """
+    # 1) Listar archivos de sesión
+    try:
+        session_files = [f for f in os.listdir(CONFIG_DIR) if f.endswith("_session.json")]
+    except FileNotFoundError:
+        session_files = []
+    print("🗂️ Sesiones encontradas:", session_files)
+
+    reports = []
+    for filename in session_files:
+        path = os.path.join(CONFIG_DIR, filename)
+        try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-                process = data.get("process")
-                supervisor = data.get("supervisor", "Desconocido")
-                answers = data.get("answers", {})
-                fecha = data.get("fecha_hora", today)
-
-                lines = [f"Proceso: {process} | Supervisor: {supervisor} | Fecha: {fecha}"]
-                for pregunta, respuesta in answers.items():
-                    lines.append(f"- {pregunta}:\n  {respuesta}")
-
-                raw_blocks.append("\n".join(lines))
+            reports.append(data)
+        except Exception as e:
+            print(f"❌ Error leyendo {filename}: {e}")
 
     admin = get_admin_data()
 
-    if not raw_blocks:
+    # Si no hay reportes, avisar y salir
+    if not reports:
         send_whatsapp_message(
-            admin["phone"],
+            admin['phone'],
             f"⚠️ {admin['name']}, no se recibió información de ningún supervisor hoy. El informe NO se enviará."
         )
-        print("⚠️ Sin bloques ➜ Administrador notificado.")
         return
 
-    draft_body = "\n\n---\n\n".join(raw_blocks)
-
-    system_prompt = f"""
-Eres un redactor corporativo experto. Recibes datos crudos de supervisores.
-Devuelve un solo EMAIL en HTML profesional:
-- Comienza: <p>Cordial saludo,</p>
-- Sigue: <p>Estas son las novedades y estado de los procesos del área de conversión del día [FECHA]:</p>
-- Para cada proceso: <h3>🔹 Proceso: [Nombre]</h3>
-- Dentro de cada bloque: <ul><li>...</li></ul> ➜ personal ausente, máquinas, paros, inventario, novedades importantes.
-- Usa emojis y subtítulos claros.
-- Corrige forma y ortografía.
-- Finaliza: <p>Quedamos atentos a cualquier observación.<br>Atentamente,<br>CIPLASBOT - Asistente I.A proceso conversión</p>
-"""
-
-    response = client.chat.completions.create(
-        model="o4-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": draft_body}
-        ]
+    # 2) Preparar prompt para OpenAI
+    system_prompt = (
+        "Eres un asistente que genera un email en HTML para el equipo de producción. "
+        "Debes detallar los reportes de cada supervisor, agrupados por proceso. "
+        "Para cada proceso, incluye: supervisor, hora de registro, y listas con las novedades: personal ausente, operando, inventario, paradas, y notas generales. "
+        "Utiliza etiquetas HTML (<h3>, <h4>, <ul>, <li>, <p>) y emojis para cada sección. "
+        "Al final, agrega un pie de página con agradecimiento y la firma 'Agente IA CiplasBot 🤖'."
+    )
+    user_prompt = (
+        "Genera el cuerpo en HTML de un email de resumen diario de novedades basado en la siguiente lista de reportes (formato JSON):\n"
+        f"{json.dumps(reports, ensure_ascii=False, indent=2)}"
     )
 
-    final_body = response.choices[0].message.content.strip()
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        final_body = response.choices[0].message.content
+    except Exception as e:
+        print(f"❌ Error generando el resumen con OpenAI: {e}")
+        # Fallback: cuerpo simple
+        date_str = datetime.now().strftime('%d/%m/%Y')
+        final_body = (
+            f"<p>👋 <strong>¡Buen día, equipo!</strong></p>"
+            f"<p>📅 Actualización del área de conversión al <b>{date_str}</b>:</p>"
+            "<p>No fue posible generar el resumen automáticamente.</p>"
+            "<p>Atentamente,<br>Agente IA CiplasBot 🤖</p>"
+        )
 
-    print("\n==============================")
-    print("📧 📋 EMAIL FINAL PARA GERENCIA")
-    print("==============================\n")
-    print(final_body)
-    print("\n==============================\n")
-
-    payload = {
-        "subject": f"Informe de Novedades Conversión – {datetime.now().strftime('%Y-%m-%d')}",
-        "body": final_body
-    }
+    # 3) Subject y envío
+    subject = f"Informe de Novedades Conversión – {datetime.now().strftime('%d/%m/%Y')}"
 
     try:
-        res = requests.post(WEBHOOK_URL, json=payload)
-        print(f"📤 Correo enviado a Make: {res.status_code}")
-
-        if res.status_code == 200:
-            send_whatsapp_message(
-                admin["phone"],
-                f"✅ {admin['name']}, el informe diario de producción fue enviado correctamente como borrador,revisalo antes de enviar. 📧"
-            )
-            print(f"✅ Confirmación enviada a {admin['name']}.")
-
-            # ✅ Backup y Borrar sesiones vivas de CONFIG
-            deleted = 0
-            os.makedirs(HISTORY_DIR, exist_ok=True)
-
-            for file in os.listdir(CONFIG_DIR):
-                if file.endswith("_session.json"):
-                    session_path = os.path.join(CONFIG_DIR, file)
-
-                    # Backup
-                    with open(session_path, encoding="utf-8") as f:
-                        session_data = json.load(f)
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    backup_name = f"{file.replace('_session.json', '')}_history_{timestamp}.json"
-                    backup_path = os.path.join(HISTORY_DIR, backup_name)
-
-                    with open(backup_path, "w", encoding="utf-8") as f:
-                        json.dump(session_data, f, indent=2, ensure_ascii=False)
-                    print(f"📦 Backup guardado: {backup_path}")
-
-                    # Borrar sesión original
-                    os.remove(session_path)
-                    deleted += 1
-
-            print(f"🗑️ {deleted} sesiones activas respaldadas y eliminadas de CONFIG.")
-
-            # ✅ Eliminar alert_log.json tras envío exitoso
-            alert_log_path = os.path.join(CONFIG_DIR, "alert_log.json")
-            if os.path.exists(alert_log_path):
-                os.remove(alert_log_path)
-                print("🧹 Archivo alert_log.json eliminado correctamente.")
-
+        # Enviar a Make
+        requests.post(WEBHOOK_URL, json={'subject': subject, 'body': final_body})
+        # Notificar por WhatsApp
+        send_whatsapp_message(
+            admin['phone'],
+            f"✅ {admin['name']}, el informe diario de novedades fue enviado correctamente."
+        )
     except Exception as e:
-        print(f"❌ Error enviando a Make: {e}")
+        print(f"❌ Error enviando informe: {e}")
+
+    # 4) Limpieza de archivos de sesión y alertas
+    for fn in session_files:
+        try:
+            os.remove(os.path.join(CONFIG_DIR, fn))
+        except:
+            pass
+    if os.path.exists(ALERT_LOG_FILE):
+        os.remove(ALERT_LOG_FILE)
+
 
 if __name__ == "__main__":
     compile_daily_summary()

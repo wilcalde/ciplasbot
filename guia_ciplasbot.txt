@@ -1,0 +1,116 @@
+Guía de CIPLASBOT
+
+1. Introducción
+CIPLASBOT es un asistente virtual desarrollado en Python para Ciplas S.A.S. Diseñado para automatizar tareas administrativas, generar reportes de producción, enviar alertas y notificaciones, y gestionar flujos de información vía Telegram y Make.com.
+
+2. Estructura del proyecto
+CIPLASBOT/
+├── __pycache__/
+│   └── main.cpython-310.pyc
+├── config/
+│   ├── history/
+│   ├── supervision_responses/
+│   ├── tasks/
+│   ├── users.json
+│   └── users.py
+├── dashboards/
+│   ├── dashboard_cuerdas.py
+│   ├── dashboard_fileteado.py
+│   └── dashboard_rtr.py
+├── history/
+│   └── <archivos de logs o históricos según configuración>
+├── services/
+│   ├── __init__.py
+│   ├── openai_service.py
+│   ├── prompts.py
+│   ├── run_scheduler.py
+│   ├── scheduler.py
+│   ├── session_memory.py
+│   └── whatsapp_service.py
+├── supervision_responses/
+│   └── compile_supervision_report.py
+├── tasks/
+│   └── <scripts relacionados con tareas programadas>
+├── utils/
+│   ├── openai_integration.py
+│   └── make_integration.py
+├── workflows/
+│   ├── __pycache__/
+│   ├── compile_daily_summary.py
+│   ├── compile_supervision_report.py
+│   ├── daily_report.py
+│   ├── dashboard_notifications.py
+│   └── send_daily_tasks.py
+├── webhook.py
+├── venv/
+└── requirements.txt
+
+3. Descripción de módulos
+
+3.1 config/users.json & config/users.py  
+   – Definen la lista de supervisores, credenciales y lógica de carga/validación de usuarios.
+
+3.2 config/history/  
+   – Almacena archivos de historial de conversaciones o logs de eventos.
+
+3.3 config/supervision_responses/  
+   – Guarda respuestas crudas de supervisores antes de procesarlas.
+
+3.4 config/tasks/  
+   – Scripts auxiliares para gestión de tareas programadas (si aplica).
+
+3.5 dashboards/  
+   – **dashboard_cuerdas.py**: análisis de denier y desempeño de operarios en sección de cuerdas.  
+   – **dashboard_fileteado.py**: gráficos y tablas de causas de paro en fileteado.  
+   – **dashboard_rtr.py**: métricas de velocidad y productividad en impresión RTR.
+
+3.6 services/  
+   – **openai_service.py**: llamadas a la API de OpenAI.  
+   – **prompts.py**: definición central de prompts y plantillas.  
+   – **run_scheduler.py**: punto de entrada para iniciar el scheduler.  
+   – **scheduler.py**: lógica de programación de informes y alertas.  
+   – **session_memory.py**: manejo de contexto y memoria de sesión.  
+   – **whatsapp_service.py**: integración con WhatsApp (recepción y envío).
+
+3.7 supervision_responses/compile_supervision_report.py  
+   – Carga respuestas JSON de supervisores y genera el informe HTML final.
+
+3.8 tasks/  
+   – (Opcional) Scripts para generación de tareas o recordatorios internos.
+
+3.9 utils/  
+   – **openai_integration.py**: funciones de bajo nivel para llamadas a OpenAI.  
+   – **make_integration.py**: envío de payloads a Make.com vía webhook.
+
+3.10 workflows/  
+   – Scripts de flujos autónomos:  
+     • **compile_daily_summary.py**: resumen ejecutivo diario de producción.  
+     • **daily_report.py**: generación de reportes diarios.  
+     • **dashboard_notifications.py**: notificaciones asociadas al dashboard.  
+     • **send_daily_tasks.py**: envío de lista de tareas diarias.  
+     • **compile_supervision_report.py**: wrapper para el proceso de supervisión.
+
+3.11 webhook.py  
+   – **handle_whatsapp_message()**: recibe y parsea mensajes entrantes.  
+   – **route_intent()**: determina acción según intención.  
+   – **save_conversation()**: registra mensajes en la base SQLite.
+
+4. Flujo de ejecución
+- Al iniciar el servidor/env se ejecuta `run_scheduler.py`.  
+- El scheduler programa:  
+  • Informes de producción (daily_report, compile_daily_summary).  
+  • Preguntas de supervisión a las 14:30.  
+  • Alertas cada 15 min hasta las 16:00.  
+- `webhook.py` atiende WhatsApp en tiempo real.  
+- Dashboards se levantan bajo demanda con `streamlit run` desde la carpeta `dashboards`.  
+- Los módulos en `workflows/` pueden ejecutarse independientemente o integrarse en Make.com.
+
+5. Configuración
+- Variables de entorno:  
+  • `OPENAI_API_KEY`  
+  • `TELEGRAM_TOKEN`  
+  • `MAKE_WEBHOOK_URL`  
+  • `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`  
+- Dependencias:  
+  ```bash
+  pip install -r requirements.txt
