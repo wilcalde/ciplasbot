@@ -52,6 +52,7 @@ def _rerun():
     try:
         st.rerun()
     except AttributeError:
+        # Compatibilidad con versiones antiguas
         st.experimental_rerun()
 
 # ==============================
@@ -226,7 +227,8 @@ with st.expander("➕ Nueva tarea rápida", expanded=False):
 # ======== Render ========
 tab1, tab2, tab3 = st.tabs(["📅 Por fecha", "⏫ Por prioridad", "🏭 Por proceso"])
 
-def render_task_card(t: Dict[str, Any]):
+def render_task_card(t: Dict[str, Any], ns: str):
+    """ns = namespace para claves únicas por pestaña (evita colisiones)."""
     tid = t.get("id")
     name = t.get("name", "—")
     due = _format_date(t.get("due_date"))
@@ -257,8 +259,10 @@ def render_task_card(t: Dict[str, Any]):
     with cols[2]:
         st.caption("Reprogramar fecha")
         current_value = _safe_date_value(t.get('due_date'))
-        new_due = st.date_input(" ", key=f"due_{tid}", value=current_value)
-        if st.button("💾 Reprogramar", key=f"resched_{tid}"):
+        new_due = st.date_input(
+            " ", key=f"{ns}_due_{tid}", value=current_value
+        )
+        if st.button("💾 Reprogramar", key=f"{ns}_resched_{tid}"):
             action_reschedule(tid, new_due)
             st.success("Fecha actualizada.")
             _rerun()
@@ -266,19 +270,19 @@ def render_task_card(t: Dict[str, Any]):
     with cols[3]:
         st.caption("Estado")
         if status == "pendiente":
-            if st.button("✅ Marcar hecha", key=f"done_{tid}"):
+            if st.button("✅ Marcar hecha", key=f"{ns}_done_{tid}"):
                 action_mark_done(tid)
                 st.success("Tarea completada.")
                 _rerun()
         else:
-            if st.button("↩️ Reabrir", key=f"reopen_{tid}"):
+            if st.button("↩️ Reabrir", key=f"{ns}_reopen_{tid}"):
                 action_reopen(tid)
                 st.info("Tarea reabierta.")
                 _rerun()
 
     with cols[4]:
         st.caption("Eliminar")
-        if st.button("🗑️ Eliminar", key=f"del_{tid}"):
+        if st.button("🗑️ Eliminar", key=f"{ns}_del_{tid}"):
             action_delete(tid)
             st.warning("Tarea eliminada.")
             _rerun()
@@ -295,11 +299,11 @@ def render_task_card(t: Dict[str, Any]):
 
     c_cols = st.columns([3, 7, 2])
     with c_cols[0]:
-        author = st.text_input("Autor", key=f"c_author_{tid}", value=t.get("created_by","Usuario"))
+        author = st.text_input("Autor", key=f"{ns}_c_author_{tid}", value=t.get("created_by","Usuario"))
     with c_cols[1]:
-        msg = st.text_input("Escribe un comentario…", key=f"c_text_{tid}", value="")
+        msg = st.text_input("Escribe un comentario…", key=f"{ns}_c_text_{tid}", value="")
     with c_cols[2]:
-        if st.button("➕ Agregar", key=f"c_add_{tid}"):
+        if st.button("➕ Agregar", key=f"{ns}_c_add_{tid}"):
             action_add_comment(tid, author, msg)
             st.success("Comentario agregado.")
             _rerun()
@@ -324,7 +328,7 @@ def section_by_date(tasks: List[Dict[str, Any]]):
             key=lambda x: (_priority_rank(x.get("priority")), x.get("status") != "pendiente", x.get("name",""))
         )
         for t in day_tasks:
-            render_task_card(t)
+            render_task_card(t, ns="date")
 
 # ---------- Pestaña: Por prioridad ----------
 def section_by_priority(tasks: List[Dict[str, Any]]):
@@ -343,7 +347,7 @@ def section_by_priority(tasks: List[Dict[str, Any]]):
                 key=lambda x: (x.get("due_date") or "9999-12-31", x.get("status") != "pendiente", x.get("process",""))
             )
             for t in pr_tasks:
-                render_task_card(t)
+                render_task_card(t, ns="prio")
 
 # ---------- Pestaña: Por proceso ----------
 def section_by_process(tasks: List[Dict[str, Any]]):
@@ -364,7 +368,7 @@ def section_by_process(tasks: List[Dict[str, Any]]):
             key=lambda x: (x.get("due_date") or "9999-12-31", _priority_rank(x.get("priority")))
         )
         for t in proc_tasks:
-            render_task_card(t)
+            render_task_card(t, ns="proc")
 
 with tab1:
     section_by_date(tasks_all)
