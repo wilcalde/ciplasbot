@@ -187,7 +187,7 @@ def action_add_comment(tid: str, author: str, comment: str):
 # ==============================
 # UI: Filtros y Vistas
 # ==============================
-st.title("🗂️ Task Manager — CiplasBot")
+st.title("🗂️ Task Manager — CiplasBot -Wilson Calderon")
 
 tasks_all = _load_tasks()
 
