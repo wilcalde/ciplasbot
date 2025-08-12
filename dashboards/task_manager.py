@@ -8,7 +8,7 @@ import streamlit as st
 # ==============================
 # Config y rutas
 # ==============================
-st.set_page_config(page_title="🗂️ Task Manager CiplasBot Wilson Calderon", layout="wide")
+st.set_page_config(page_title="🗂️ Task Manager CiplasBot", layout="wide")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.normpath(os.path.join(BASE_DIR, "../config"))
@@ -20,7 +20,6 @@ TASKS_FILE = os.path.join(CONFIG_DIR, "tasks.json")
 st.markdown("""
 <style>
     html, body, [data-testid="stApp"] { background-color: #0e0f14; color: #eaeef3; }
-    div[data-testid="stSidebar"] { background-color: #12131a; }
     .task-card {
         background: #171923;
         border: 1px solid #24283b;
@@ -53,7 +52,6 @@ def _rerun():
     try:
         st.rerun()
     except AttributeError:
-        # Compatibilidad con versiones antiguas
         st.experimental_rerun()
 
 # ==============================
@@ -77,8 +75,6 @@ def _load_tasks() -> List[Dict[str, Any]]:
     except Exception as e:
         st.error(f"No se pudo leer {TASKS_FILE}: {e}")
         tasks = []
-
-    # normaliza campos esperados
     for t in tasks:
         t.setdefault("status", "pendiente")
         t.setdefault("comments", [])
@@ -137,6 +133,10 @@ def _safe_date_value(due_iso: str | None) -> date:
         pass
     return date.today()
 
+def _priority_rank(p: str) -> int:
+    m = {"alta": 0, "media": 1, "baja": 2}
+    return m.get((p or "").lower(), 3)
+
 # ==============================
 # Acciones sobre tareas
 # ==============================
@@ -185,91 +185,45 @@ def action_add_comment(tid: str, author: str, comment: str):
         _save_tasks(tasks)
 
 # ==============================
-# UI: Filtros y Vistas
+# UI
 # ==============================
-st.title("🗂️ Task Manager — CiplasBot -Wilson Calderon")
+st.title("🗂️ Task Manager — CiplasBot")
 
 tasks_all = _load_tasks()
 
-# Barra de filtros
-with st.sidebar:
-    st.header("🔎 Filtros")
-    status_filter = st.multiselect(
-        "Estado",
-        options=["pendiente", "hecha"],
-        default=["pendiente"]
-    )
-    priorities = sorted({(t.get("priority") or "").capitalize() for t in tasks_all if t.get("priority")})
-    priority_filter = st.multiselect(
-        "Prioridad",
-        options=priorities or ["Alta", "Media", "Baja"],
-        default=priorities or ["Alta", "Media", "Baja"]
-    )
-    processes = sorted({t.get("process", "") for t in tasks_all if t.get("process")})
-    process_filter = st.multiselect(
-        "Proceso",
-        options=processes or [],
-        default=processes or []
-    )
-    # Rango de fechas
-    dates = sorted([t.get("due_date") for t in tasks_all if t.get("due_date")])
-    min_d = date.today()
-    max_d = date.today()
-    try:
-        if dates:
-            min_d = date.fromisoformat(min(dates))
-            max_d = date.fromisoformat(max(dates))
-    except Exception:
-        pass
-    date_range = st.date_input("Rango de vencimiento", value=(min_d, max_d))
+# ---- Nueva tarea rápida (sin sidebar) ----
+with st.expander("➕ Nueva tarea rápida", expanded=False):
+    c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 3, 2])
+    with c1:
+        q_name = st.text_input("Nombre", key="qa_name")
+    with c2:
+        q_due = st.date_input("Vence", value=date.today(), key="qa_due")
+    with c3:
+        q_prio = st.selectbox("Prioridad", ["Alta", "Media", "Baja"], key="qa_prio")
+    with c4:
+        q_proc = st.text_input("Proceso", value="", key="qa_proc")
+    with c5:
+        q_creator = st.text_input("Creador", value="Administrador", key="qa_creator")
+    if st.button("Crear tarea", key="qa_submit"):
+        tasks_now = _load_tasks()
+        new_task = {
+            "id": datetime.now().strftime("T%Y%m%d%H%M%S%f"),
+            "name": (q_name or "").strip() or "Tarea sin nombre",
+            "due_date": q_due.isoformat(),
+            "priority": q_prio,
+            "process": (q_proc or "").strip() or "General",
+            "status": "pendiente",
+            "created_at": datetime.now().isoformat(),
+            "created_by_phone": "",
+            "created_by": (q_creator or "").strip() or "Administrador",
+            "comments": []
+        }
+        tasks_now.append(new_task)
+        _save_tasks(tasks_now)
+        st.success("Tarea creada.")
+        _rerun()
 
-    sort_by = st.selectbox(
-        "Ordenar por",
-        options=["Vencimiento (asc)", "Vencimiento (desc)", "Prioridad", "Proceso", "Estado"]
-    )
-
-# Aplica filtros
-def _passes_filters(t: Dict[str, Any]) -> bool:
-    if status_filter and (t.get("status", "pendiente").lower() not in status_filter):
-        return False
-    if priority_filter:
-        pr = (t.get("priority") or "").capitalize()
-        if pr and pr not in priority_filter:
-            return False
-    if process_filter:
-        prc = t.get("process", "")
-        if prc and prc not in process_filter:
-            return False
-    # fecha
-    try:
-        d_from, d_to = date_range if isinstance(date_range, tuple) else (date_range, date_range)
-        if t.get("due_date"):
-            d = date.fromisoformat(t["due_date"])
-            if d < d_from or d > d_to:
-                return False
-    except Exception:
-        pass
-    return True
-
-tasks = [t for t in tasks_all if _passes_filters(t)]
-
-# Ordenamiento
-def _priority_rank(p: str) -> int:
-    m = {"alta": 0, "media": 1, "baja": 2}
-    return m.get((p or "").lower(), 3)
-
-if sort_by == "Vencimiento (asc)":
-    tasks.sort(key=lambda x: (x.get("due_date") or "9999-12-31", _priority_rank(x.get("priority")), x.get("process","")))
-elif sort_by == "Vencimiento (desc)":
-    tasks.sort(key=lambda x: (x.get("due_date") or "0000-01-01"), reverse=True)
-elif sort_by == "Prioridad":
-    tasks.sort(key=lambda x: _priority_rank(x.get("priority")))
-elif sort_by == "Proceso":
-    tasks.sort(key=lambda x: x.get("process",""))
-elif sort_by == "Estado":
-    tasks.sort(key=lambda x: x.get("status","pendiente"))
-
-# Tabs por vista
+# ======== Render ========
 tab1, tab2, tab3 = st.tabs(["📅 Por fecha", "⏫ Por prioridad", "🏭 Por proceso"])
 
 def render_task_card(t: Dict[str, Any]):
@@ -280,7 +234,6 @@ def render_task_card(t: Dict[str, Any]):
     proc = t.get("process", "—")
     status = t.get("status", "pendiente")
     created_by = t.get("created_by", "—")
-
     overdue = _overdue(t.get("due_date"))
 
     st.markdown('<div class="task-card">', unsafe_allow_html=True)
@@ -330,7 +283,6 @@ def render_task_card(t: Dict[str, Any]):
             st.warning("Tarea eliminada.")
             _rerun()
 
-    # Comentarios
     st.divider()
     st.subheader("💬 Comentarios")
     comments = t.get("comments", [])
@@ -354,73 +306,69 @@ def render_task_card(t: Dict[str, Any]):
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-def section_by_date():
-    # agrupar por fecha (string)
+# ---------- Pestaña: Por fecha ----------
+def section_by_date(tasks: List[Dict[str, Any]]):
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for t in tasks:
         k = _format_date(t.get("due_date"))
         groups.setdefault(k, []).append(t)
-    for due_key in sorted(groups.keys()):
+
+    def _date_key(k: str) -> str:
+        return "9999-12-31" if k == "—" else k
+
+    for due_key in sorted(groups.keys(), key=_date_key):
         st.markdown(f"## 📅 {due_key}")
-        for t in groups[due_key]:
+        # Dentro del día: prioridad (Alta→Baja), luego estado (pendiente primero), luego nombre
+        day_tasks = sorted(
+            groups[due_key],
+            key=lambda x: (_priority_rank(x.get("priority")), x.get("status") != "pendiente", x.get("name",""))
+        )
+        for t in day_tasks:
             render_task_card(t)
 
-def section_by_priority():
+# ---------- Pestaña: Por prioridad ----------
+def section_by_priority(tasks: List[Dict[str, Any]]):
     order = ["Alta", "Media", "Baja", "—"]
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for t in tasks:
         k = (t.get("priority") or "—").capitalize()
         groups.setdefault(k, []).append(t)
+
     for pr in order:
         if pr in groups:
             st.markdown(f"## ⏫ {pr}")
-            for t in groups[pr]:
+            # Dentro de la prioridad: por vencimiento ascendente, luego estado, luego proceso
+            pr_tasks = sorted(
+                groups[pr],
+                key=lambda x: (x.get("due_date") or "9999-12-31", x.get("status") != "pendiente", x.get("process",""))
+            )
+            for t in pr_tasks:
                 render_task_card(t)
 
-def section_by_process():
+# ---------- Pestaña: Por proceso ----------
+def section_by_process(tasks: List[Dict[str, Any]]):
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for t in tasks:
         k = t.get("process") or "—"
         groups.setdefault(k, []).append(t)
-    for proc in sorted(groups.keys()):
+
+    def _proc_key(k: str) -> tuple:
+        # que "—" quede al final
+        return (1, "") if k == "—" else (0, k.lower())
+
+    for proc in sorted(groups.keys(), key=_proc_key):
         st.markdown(f"## 🏭 {proc}")
-        for t in groups[proc]:
+        # Dentro del proceso: por vencimiento ascendente, luego prioridad
+        proc_tasks = sorted(
+            groups[proc],
+            key=lambda x: (x.get("due_date") or "9999-12-31", _priority_rank(x.get("priority")))
+        )
+        for t in proc_tasks:
             render_task_card(t)
 
 with tab1:
-    section_by_date()
+    section_by_date(tasks_all)
 with tab2:
-    section_by_priority()
+    section_by_priority(tasks_all)
 with tab3:
-    section_by_process()
-
-# ==============================
-# Agregar tarea rápida (opcional)
-# ==============================
-st.sidebar.divider()
-st.sidebar.subheader("➕ Nueva tarea rápida")
-with st.sidebar.form("quick_add"):
-    q_name = st.text_input("Nombre")
-    q_due = st.date_input("Vence", value=date.today())
-    q_prio = st.selectbox("Prioridad", ["Alta", "Media", "Baja"])
-    q_proc = st.text_input("Proceso", value="")
-    q_creator = st.text_input("Creador", value="Administrador")
-    submitted = st.form_submit_button("Crear tarea")
-    if submitted:
-        tasks_now = _load_tasks()
-        new_task = {
-            "id": datetime.now().strftime("T%Y%m%d%H%M%S%f"),
-            "name": (q_name or "").strip() or "Tarea sin nombre",
-            "due_date": q_due.isoformat(),
-            "priority": q_prio,
-            "process": (q_proc or "").strip() or "General",
-            "status": "pendiente",
-            "created_at": datetime.now().isoformat(),
-            "created_by_phone": "",
-            "created_by": (q_creator or "").strip() or "Administrador",
-            "comments": []
-        }
-        tasks_now.append(new_task)
-        _save_tasks(tasks_now)
-        st.success("Tarea creada.")
-        _rerun()
+    section_by_process(tasks_all)
