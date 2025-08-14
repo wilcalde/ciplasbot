@@ -20,11 +20,11 @@ from workflows.supervision_questions import (
     ask_supervision_questions
 )
 
-# Gestor de tareas
-from workflows.tasks_manager import (
-    start_new_task_flow,
-    handle_task_flow_response,
-    has_active_task_flow,
+# 👇 Nuevo: Gestor NLU de tareas (sistema por lenguaje natural)
+from services.tasks_manager import (
+    handle_followup,          # maneja pasos faltantes (pedir título, desambiguar ID, etc.)
+    maybe_handle_task_message, # interpreta la intención (crear, ver, editar, eliminar)
+    send_task_menu            # permite abrir el menú con /nueva_tarea o /tareas
 )
 
 app = FastAPI()
@@ -72,20 +72,10 @@ def get_user_name_by_phone(phone_digits: str) -> str:
 
 def respuesta_inteligente(texto: str, nombre: str, numero: str) -> str:
     """
-    Respuestas por defecto (IA general) + atajos de tareas para casos donde se llame
-    esta función directamente desde otros flujos.
+    Respuestas por defecto (IA general). La gestión de tareas se maneja en el endpoint
+    antes de llegar aquí, para evitar duplicidades.
     """
     texto_low = (texto or "").strip().lower()
-
-    # ——— Integración tareas (redundante a endpoint, por seguridad) ———
-    if texto_low.startswith("/nueva_tarea"):
-        start_new_task_flow(numero)
-        return "OK"
-
-    if has_active_task_flow(numero):
-        handle_task_flow_response(numero, texto)
-        return "OK"
-    # ————————————————————————————————————————————————————————————————
 
     # Atajo simple “tareas del día” (legacy)
     if texto_low in ("tareas", "tareas del día", "tareas del dia"):
@@ -148,16 +138,24 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
         return {"status": "ok", "detail": "no text content; user prompted"}
 
     # ——————————————————————————————————————————————
-    # 0) FLUJO DE TAREAS (tiene prioridad y se procesa antes de otros)
+    # 0) GESTIÓN DE TAREAS (NLU) — tiene prioridad
     # ——————————————————————————————————————————————
-    if texto_low.startswith("/nueva_tarea"):
-        # Valida admin internamente y abre flujo
-        start_new_task_flow(numero)
-        return {"status": "ok", "detail": "task_flow_started"}
+    # Comando para abrir menú (compat con flujo anterior)
+    if texto_low.startswith("/nueva_tarea") or texto_low in ("/tareas", "menu tareas", "gestión de tareas", "gestionar tareas"):
+        try:
+            send_task_menu(numero)
+        except Exception as e:
+            print(f"❌ Error enviando menú de tareas: {e}")
+        return {"status": "ok", "detail": "task_menu_sent"}
 
-    if has_active_task_flow(numero):
-        handle_task_flow_response(numero, texto)
-        return {"status": "ok", "detail": "task_flow_progress"}
+    # Si hay un flujo de seguimiento abierto (p.ej. pedir título, desambiguar ID)
+    if handle_followup(texto, numero):
+        return {"status": "ok", "detail": "task_followup_handled"}
+
+    # Intentar interpretar el mensaje como acción de tareas (solo admin internamente)
+    nombre_admin = get_user_name_by_phone(numero)
+    if maybe_handle_task_message(texto, nombre_admin, numero):
+        return {"status": "ok", "detail": "task_message_handled"}
     # ——————————————————————————————————————————————
 
     # 1️⃣ Cargar sesión de supervisión si existe en disco
@@ -189,7 +187,9 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
             nombre = get_user_name_by_phone(numero)
             respuesta = respuesta_inteligente(texto, nombre, numero)
             try:
-                send_whatsapp_message(numero, respuesta)
+                # Evita enviar textos vacíos si alguna ruta anterior ya respondió
+                if respuesta and respuesta.strip().lower() not in ("ok",):
+                    send_whatsapp_message(numero, respuesta)
             except Exception as e:
                 print(f"❌ Error enviando respuesta general a {numero}: {e}")
             return {"status": "no_flow", "reply": respuesta}
