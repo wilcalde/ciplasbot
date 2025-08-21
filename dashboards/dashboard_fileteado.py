@@ -1,4 +1,3 @@
-# dashboard.py
 import streamlit as st
 import pandas as pd
 import requests
@@ -7,6 +6,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
+import re
+import unicodedata
 
 # 🎨 Estilo oscuro
 mpl.style.use('dark_background')
@@ -15,369 +16,297 @@ st.set_page_config(layout="wide", page_title="🏠 Dashboard Fileteado", page_ic
 # 🧼 Estilos CSS
 st.markdown("""
     <style>
-        html, body, [data-testid="stApp"] {
-            background-color: #000000;
-            color: white;
-        }
-        div[data-testid="stSidebar"] {
-            background-color: #1e1e1e;
-        }
-        h1, h2, h3, h4, p, label {
-            color: white !important;
-        }
-        .dataframe {
-            background-color: #000000;
-            color: white;
-            border: none;
-        }
-        .styled-table {
-            border-collapse: collapse;
-            margin: 0;
-            font-size: 12px;
-        }
-        .styled-table th, .styled-table td {
-            border: 1px solid #444;
-            padding: 4px 8px;
-            text-align: center;
-        }
-        .styled-table thead tr {
-            background-color: #333;
-        }
+        html, body, [data-testid="stApp"] { background-color: #000000; color: white; }
+        div[data-testid="stSidebar"] { background-color: #1e1e1e; }
+        h1, h2, h3, h4, p, label { color: white !important; }
+        .styled-table { border-collapse: collapse; margin: 0; font-size: 12px; }
+        .styled-table th, .styled-table td { border: 1px solid #444; padding: 4px 8px; text-align: center; }
+        .styled-table thead tr { background-color: #333; }
     </style>
 """, unsafe_allow_html=True)
 
 # 🏷️ Título
 st.markdown("<h1>📌 Dashboard ejecutivo fileteado</h1>", unsafe_allow_html=True)
-fecha_actual = datetime.now().strftime("%d/%m/%Y")
-st.markdown(f"<p>🗓 Informe generado el {fecha_actual}</p>", unsafe_allow_html=True)
+st.markdown(f"<p>🗓 Informe generado el {datetime.now().strftime('%d/%m/%Y')}</p>", unsafe_allow_html=True)
 
-# 📥 Descargar archivo desde Google Sheets (caché 5 min)
+# ——————————————————————————————————————
+# Utilidades de normalización y búsqueda
+# ——————————————————————————————————————
+def slug(s: str) -> str:
+    s = unicodedata.normalize("NFKD", str(s))
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    s = re.sub(r"[^0-9a-zA-Z]+", "_", s.lower()).strip("_")
+    return re.sub(r"_+", "_", s)
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [slug(c) for c in df.columns]
+    return df
+
+def first_col(df: pd.DataFrame, candidates) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def to_numeric_safe(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
+def blues_colors(n: int):
+    cmap = plt.cm.Blues
+    return [cmap(x) for x in np.linspace(0.35, 0.9, max(n, 1))]
+
+# ——————————————————————————————————————
+# Carga de datos
+# ——————————————————————————————————————
 @st.cache_data(ttl=300)
-def load_excel_from_gsheet(gsheet_export_url: str):
-    resp = requests.get(gsheet_export_url, timeout=30)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Error HTTP {resp.status_code}")
-    excel_data = io.BytesIO(resp.content)
-    dfs = pd.read_excel(excel_data, sheet_name=None)
-    return dfs
+def load_excel(url: str):
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return pd.read_excel(io.BytesIO(r.content), sheet_name=None)
 
-url = 'https://docs.google.com/spreadsheets/d/1FYLgfQhLvCUtiuxGnn5aQK6aCChoFPmMU-eMa0KAHrg/export?format=xlsx'
+url = "https://docs.google.com/spreadsheets/d/1FYLgfQhLvCUtiuxGnn5aQK6aCChoFPmMU-eMa0KAHrg/export?format=xlsx"
 
 try:
-    dfs = load_excel_from_gsheet(url)
+    sheets = load_excel(url)
 except Exception as e:
     st.error(f"❌ Error al descargar/leer el archivo: {e}")
     st.stop()
 
-if "Fileteado" not in dfs:
-    st.error("❌ No se encontró la hoja 'Fileteado' en el archivo.")
+if "Fileteado" not in sheets:
+    st.error("❌ No se encontró la hoja 'Fileteado'.")
     st.stop()
 
-# =========================
-#   PREPROCESAMIENTO
-# =========================
-df = dfs["Fileteado"].copy()
+df = normalize_columns(sheets["Fileteado"])
 
-# Fechas
-if 'Fecha_Efectiva' not in df.columns:
-    st.error("❌ Falta la columna 'Fecha_Efectiva'.")
+# Mapear columnas posibles
+col_fecha   = first_col(df, ["fecha_efectiva", "fecha", "fecha_de_registro"])
+col_turno   = first_col(df, ["turno"])
+col_maquina = first_col(df, ["maquina"])
+col_artic   = first_col(df, ["numero_articulo", "numero_de_articulo", "num_articulo", "referencia"])
+col_oper    = first_col(df, ["apellidos_nombres", "operario", "nombre", "nombres"])
+col_prod    = first_col(df, ["cantidad_completada", "cant_kg", "cantidad_kg", "cantidad", "unidades"])
+col_corr    = first_col(df, ["tiempo_corrida", "tiempo_real_de_corrida", "horas_corrida"])
+col_causa   = first_col(df, ["causa_paro", "descripcion_razon", "descripcion_causa", "razon"])
+col_tperd   = first_col(df, ["tiempo_perdido", "horas_perdidas", "tiempo_paro"])
+
+required = [col_fecha, col_maquina, col_prod]
+if any(c is None for c in required):
+    st.error(f"❌ Faltan columnas esenciales. Detectadas: fecha={col_fecha}, maquina={col_maquina}, produccion={col_prod}")
     st.stop()
-df['Fecha_Efectiva'] = pd.to_datetime(df['Fecha_Efectiva'], errors='coerce')
 
-# Limpieza básica
-if 'Numero_Articulo' in df.columns:
-    df = df[df["Numero_Articulo"] != "ESP00001"].copy()
+# Tipos y limpieza
+df[col_fecha] = pd.to_datetime(df[col_fecha], errors="coerce")
+df = df[df[col_fecha].notna()].copy()
 
-# Normalización de turno
-if 'Turno' in df.columns:
-    df['Turno'] = df['Turno'].astype(str).str.upper()
+if col_turno is None:
+    df["turno_norm"] = ""
 else:
-    df['Turno'] = ""
+    df["turno_norm"] = df[col_turno].astype(str).str.upper()
 
-# Conversión robusta a numérico
-for col in ['Cantidad_Completada', 'Tiempo_Corrida', 'Tiempo_Perdido']:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-    else:
-        # Si no existe, crearla en cero para no romper filtros/gráficos
-        df[col] = 0.0
+if col_artic is None:
+    df["art_norm"] = ""
+else:
+    df["art_norm"] = df[col_artic].astype(str).str.strip().str.lower()
 
-# Clasificación de líneas
-def clasificar_maquina(row):
-    maquina = str(row.get('Maquina', '')).lower()
-    articulo = str(row.get('Numero_Articulo', '')).lower()
-    if 'koom2000' in maquina:
-        return 'Auto7'
-    elif maquina in ['cort1', 'cort2', 'cort3', 'cort5']:
-        return 'corte_gasa'
-    elif maquina.startswith('fipla'):
-        return 'planas'
-    elif maquina.startswith('filet') and articulo.startswith('cag'):
-        return 'filete_gasa'
-    elif maquina.startswith('filet') and articulo.startswith('len'):
-        return 'filete_leno'
-    else:
-        return 'otros'
+df["prod_norm"] = to_numeric_safe(df[col_prod])
+df["corr_norm"] = to_numeric_safe(df[col_corr]) if col_corr else 0.0
+df["tperd_norm"] = to_numeric_safe(df[col_tperd]) if col_tperd else 0.0
 
-df['Linea'] = df.apply(clasificar_maquina, axis=1)
+if col_causa is None:
+    df["causa_norm"] = ""
+else:
+    df["causa_norm"] = df[col_causa].astype(str)
 
-# =========================
-#        FILTROS
-# =========================
-col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+if col_oper is None:
+    df["oper_norm"] = ""
+else:
+    df["oper_norm"] = df[col_oper].astype(str)
 
-with col1:
-    fechas_unicas = sorted(pd.to_datetime(df['Fecha_Efectiva'].dt.date.unique()))
+# Clasificación robusta de línea
+def clasificar_linea(maquina: str, articulo: str) -> str:
+    m = str(maquina).lower()
+    a = str(articulo).lower()
+    if "koom" in m or ("auto" in m and "7" in m):
+        return "Auto7"
+    if m.startswith("fipla") or "plana" in m or "fipla" in m:
+        return "planas"
+    if m.startswith("cort") or "corte" in m:
+        return "corte_gasa"
+    if "filete" in m or "filet" in m:
+        if a.startswith("cag"):
+            return "filete_gasa"
+        if a.startswith("len"):
+            return "filete_leno"
+        return "filete_otras"
+    return "otros"
+
+df["linea"] = [clasificar_linea(m, a) for m, a in zip(df[col_maquina], df["art_norm"])]
+
+# Filtrar artículo “ESP00001” si existe esa columna
+if col_artic:
+    df = df[df["art_norm"] != "esp00001"].copy()
+
+# ——————————————————————————————————————
+# Filtros UI
+# ——————————————————————————————————————
+c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+
+with c1:
+    fechas_unicas = sorted(pd.to_datetime(df[col_fecha].dt.date.unique()))
     if not fechas_unicas:
-        st.error("❌ No hay fechas válidas en los datos.")
+        st.info("No hay fechas válidas.")
         st.stop()
-    fecha_rango = st.date_input("🔕 Selecciona fecha o rango:", value=(fechas_unicas[0], fechas_unicas[-1]))
-    fecha_inicio, fecha_fin = fecha_rango if isinstance(fecha_rango, tuple) else (fecha_rango, fecha_rango)
+    date_sel = st.date_input("🔕 Selecciona fecha o rango:", value=(fechas_unicas[0], fechas_unicas[-1]))
+    f_ini, f_fin = date_sel if isinstance(date_sel, tuple) else (date_sel, date_sel)
 
-with col2:
-    lineas_disponibles = ["Todas"] + sorted(df['Linea'].dropna().unique())
-    linea_seleccionada = st.selectbox("🏠 Línea de producción:", lineas_disponibles)
+with c2:
+    linea_sel = st.selectbox("🏠 Línea de producción:", ["Todas"] + sorted(df["linea"].unique()))
 
-with col3:
-    turnos_disponibles = ["Todos"] + sorted(df['Turno'].dropna().unique())
-    turno_seleccionado = st.selectbox("👨‍💼 Turno:", turnos_disponibles)
+with c3:
+    turno_sel = st.selectbox("👨‍💼 Turno:", ["Todos"] + sorted(df["turno_norm"].dropna().unique()))
 
-with col4:
-    operarios_disponibles = ["Todos"] + sorted(df.get('Apellidos_Nombres', pd.Series([], dtype=str)).dropna().unique())
-    operario_seleccionado = st.selectbox("🧍 Operario:", operarios_disponibles)
+with c4:
+    op_list = ["Todos"] + sorted(df["oper_norm"].dropna().unique())
+    oper_sel = st.selectbox("🧍 Operario:", op_list)
 
 # Aplicar filtros
-df_filtrado = df[
-    (df['Fecha_Efectiva'].dt.date >= fecha_inicio) &
-    (df['Fecha_Efectiva'].dt.date <= fecha_fin)
+dff = df[
+    (df[col_fecha].dt.date >= f_ini) &
+    (df[col_fecha].dt.date <= f_fin)
 ].copy()
 
-if linea_seleccionada != "Todas":
-    df_filtrado = df_filtrado[df_filtrado['Linea'] == linea_seleccionada]
+if linea_sel != "Todas":
+    dff = dff[dff["linea"] == linea_sel]
+if turno_sel != "Todos":
+    dff = dff[dff["turno_norm"] == turno_sel]
+if oper_sel != "Todos":
+    dff = dff[dff["oper_norm"] == oper_sel]
 
-if turno_seleccionado != "Todos":
-    df_filtrado = df_filtrado[df_filtrado['Turno'] == turno_seleccionado]
-
-if operario_seleccionado != "Todos":
-    df_filtrado = df_filtrado[df_filtrado['Apellidos_Nombres'] == operario_seleccionado]
-
-if df_filtrado.empty:
+if dff.empty:
     st.info("ℹ️ No hay datos para el filtro aplicado.")
     st.stop()
 
-# Utilidad: paleta Blues (n colores)
-def blues_colors(n):
-    cmap = plt.cm.Blues
-    # Evitamos tonos muy claros (inicio) para visibilidad en tema oscuro
-    return [cmap(x) for x in np.linspace(0.35, 0.9, max(n, 1))]
-
-# =========================
-#   PRODUCCIÓN Y PAROS
-# =========================
+# ——————————————————————————————————————
+# Producción y paros
+# ——————————————————————————————————————
 st.markdown("<h4>📊 Producción y causas de paro</h4>", unsafe_allow_html=True)
+g1, g2, g3 = st.columns(3)
 
-col_g1, col_g2, col_g3 = st.columns(3)
-
-# --- Distribución por línea
-with col_g1:
+with g1:
     st.markdown("<h5>🔄 Distribución por línea</h5>", unsafe_allow_html=True)
-    resumen_linea = (
-        df_filtrado.groupby('Linea')['Cantidad_Completada']
-        .sum()
-        .sort_values(ascending=True)
-    )
-    if resumen_linea.empty:
+    dist = dff.groupby("linea")["prod_norm"].sum().sort_values(ascending=True)
+    if dist.empty:
         st.info("Sin datos de producción por línea.")
     else:
-        fig_linea, ax_linea = plt.subplots(figsize=(5, 3.5))
-        resumen_linea.plot(kind='barh', ax=ax_linea, color=blues_colors(len(resumen_linea)))
-        ax_linea.set_xlabel("Cantidad", color="white")
-        ax_linea.set_title("Distribución por línea", color="white")
-        ax_linea.tick_params(colors='white')
-        fig_linea.tight_layout()
-        st.pyplot(fig_linea)
+        fig, ax = plt.subplots(figsize=(5, 3.5))
+        dist.plot(kind="barh", ax=ax, color=blues_colors(len(dist)))
+        ax.set_xlabel("Cantidad", color="white"); ax.set_title("Distribución por línea", color="white")
+        ax.tick_params(colors="white"); fig.tight_layout(); st.pyplot(fig)
 
-# --- Producción diaria por línea (stacked)
-with col_g2:
+with g2:
     st.markdown("<h5>📈 Producción diaria por línea</h5>", unsafe_allow_html=True)
-    df_graf = df_filtrado[df_filtrado['Linea'].isin(['planas', 'filete_gasa', 'filete_leno'])].copy()
-
-    if df_graf.empty:
+    foco = dff[dff["linea"].isin(["planas", "filete_gasa", "filete_leno"])]
+    if foco.empty:
         st.info("Sin datos para las líneas seleccionadas en el rango elegido.")
     else:
-        grafico = (
-            df_graf
-            .groupby([df_graf['Fecha_Efectiva'].dt.date, 'Linea'])['Cantidad_Completada']
-            .sum()
-            .unstack(fill_value=0)
-            .sort_index()
-        )
-        grafico = grafico.apply(pd.to_numeric, errors='coerce').fillna(0.0)
-
-        if grafico.empty or grafico.select_dtypes(include='number').shape[1] == 0:
+        g = foco.groupby([foco[col_fecha].dt.date, "linea"])["prod_norm"].sum().unstack(fill_value=0).sort_index()
+        g = g.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        if g.empty or g.select_dtypes(include="number").shape[1] == 0:
             st.info("No hay datos numéricos para graficar.")
         else:
-            colors = blues_colors(len(grafico.columns))
             fig, ax = plt.subplots(figsize=(5, 3.5))
-            grafico.plot(kind='bar', stacked=True, ax=ax, color=colors)
-            ax.set_ylabel("Unidades", color="white")
-            ax.set_xlabel("Fecha", color="white")
+            g.plot(kind="bar", stacked=True, ax=ax, color=blues_colors(len(g.columns)))
+            ax.set_ylabel("Unidades", color="white"); ax.set_xlabel("Fecha", color="white")
             ax.set_title("Producción diaria por línea", color="white")
-            ax.tick_params(colors='white')
-            ax.legend(loc='upper left', fontsize=6)
-            fig.tight_layout()
-            st.pyplot(fig)
+            ax.tick_params(colors="white"); ax.legend(loc="upper left", fontsize=6)
+            fig.tight_layout(); st.pyplot(fig)
 
-# --- Tiempo de corrida por día y línea (stacked)
-with col_g3:
+with g3:
     st.markdown("<h5>⏱ Tiempo de corrida por día y línea</h5>", unsafe_allow_html=True)
-    df_corrida = df_filtrado[df_filtrado['Linea'].isin(['planas', 'filete_gasa', 'filete_leno'])].copy()
-
-    if df_corrida.empty:
+    if "corr_norm" not in dff.columns or (dff["corr_norm"].sum() == 0):
         st.info("Sin datos de tiempo de corrida en el rango elegido.")
     else:
-        corrida = (
-            df_corrida
-            .groupby([df_corrida['Fecha_Efectiva'].dt.date, 'Linea'])['Tiempo_Corrida']
-            .sum()
-            .unstack(fill_value=0)
-            .sort_index()
-        )
-        corrida = corrida.apply(pd.to_numeric, errors='coerce').fillna(0.0)
-
-        if corrida.empty or corrida.select_dtypes(include='number').shape[1] == 0:
+        foco = dff[dff["linea"].isin(["planas", "filete_gasa", "filete_leno"])]
+        c = foco.groupby([foco[col_fecha].dt.date, "linea"])["corr_norm"].sum().unstack(fill_value=0).sort_index()
+        c = c.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        if c.empty or c.select_dtypes(include="number").shape[1] == 0:
             st.info("No hay datos numéricos para graficar tiempos.")
         else:
-            colors_corrida = blues_colors(len(corrida.columns))
-            fig_corrida, ax_corrida = plt.subplots(figsize=(5, 3.5))
-            corrida.plot(kind='bar', stacked=True, ax=ax_corrida, color=colors_corrida)
-            ax_corrida.set_ylabel("Horas", color="white")
-            ax_corrida.set_xlabel("Fecha", color="white")
-            ax_corrida.set_title("Tiempo de corrida diario", color="white")
-            ax_corrida.tick_params(colors='white')
-            ax_corrida.legend(loc='upper left', fontsize=6)
-            fig_corrida.tight_layout()
-            st.pyplot(fig_corrida)
+            fig, ax = plt.subplots(figsize=(5, 3.5))
+            c.plot(kind="bar", stacked=True, ax=ax, color=blues_colors(len(c.columns)))
+            ax.set_ylabel("Horas", color="white"); ax.set_xlabel("Fecha", color="white")
+            ax.set_title("Tiempo de corrida diario", color="white")
+            ax.tick_params(colors="white"); ax.legend(loc="upper left", fontsize=6)
+            fig.tight_layout(); st.pyplot(fig)
 
-# =========================
-#     TOP / BAJO DESEMPEÑO
-# =========================
+# ——————————————————————————————————————
+# Top / Bajo desempeño
+# ——————————————————————————————————————
 st.markdown("<h4>🏆 Mejores operarios por línea (Sacos/Hora)</h4>", unsafe_allow_html=True)
-
 cols_top = st.columns(3)
-lineas_top = ['filete_gasa', 'filete_leno', 'planas']
-titulos = ['🥇 Filete Gasa', '🥈 Filete Leno', '🥉 Plana']
+lineas_top = ["filete_gasa", "filete_leno", "planas"]
+titulos = ["🥇 Filete Gasa", "🥈 Filete Leno", "🥉 Plana"]
 
 for i, linea in enumerate(lineas_top):
     with cols_top[i]:
-        st.markdown(f"<h5 style='text-align: center;'>{titulos[i]}</h5>", unsafe_allow_html=True)
-        df_top = df_filtrado[df_filtrado['Linea'] == linea].copy()
-        if df_top.empty:
+        st.markdown(f"<h5 style='text-align:center'>{titulos[i]}</h5>", unsafe_allow_html=True)
+        t = dff[dff["linea"] == linea]
+        if t.empty:
             st.info("Sin datos.")
-        else:
-            df_agg = df_top.groupby('Apellidos_Nombres', dropna=True).agg({
-                'Cantidad_Completada': 'sum',
-                'Tiempo_Corrida': 'sum'
-            }).reset_index()
-
-            # sacos/hora robusto
-            denom = df_agg['Tiempo_Corrida'].replace(0, pd.NA)
-            df_agg['sacos/hora'] = df_agg['Cantidad_Completada'].div(denom).fillna(0.0)
-
-            df_agg = df_agg[['Apellidos_Nombres', 'sacos/hora']].sort_values(by='sacos/hora', ascending=False).head(5)
-            df_agg = df_agg.rename(columns={'Apellidos_Nombres': 'Operario'})
-
-            st.dataframe(
-                df_agg.style
-                    .set_table_attributes('class="styled-table"')
-                    .set_properties(**{'background-color': '#111','color': 'white','border': '1px solid #444'})
-                    .format({'sacos/hora': '{:.2f}'}),
-                use_container_width=True,
-                hide_index=True
-            )
+            continue
+        agg = t.groupby("oper_norm", dropna=True).agg(prod=("prod_norm","sum"), corr=("corr_norm","sum")).reset_index()
+        agg["sacos/hora"] = agg["prod"].div(agg["corr"].replace(0, pd.NA)).fillna(0.0)
+        tabla = agg[["oper_norm","sacos/hora"]].sort_values("sacos/hora", ascending=False).head(5).rename(columns={"oper_norm":"Operario"})
+        st.dataframe(tabla.style.set_table_attributes('class="styled-table"').format({"sacos/hora":"{:.2f}"}), use_container_width=True, hide_index=True)
 
 st.markdown("<h4>❌ Operarios a revisar desempeño (Sacos/Hora)</h4>", unsafe_allow_html=True)
-
 cols_low = st.columns(3)
-titulos_low = ['⛔ Filete Gasa', '⛔ Filete Leno', '⛔ Plana']
+titulos_low = ["⛔ Filete Gasa", "⛔ Filete Leno", "⛔ Plana"]
 
 for i, linea in enumerate(lineas_top):
     with cols_low[i]:
-        st.markdown(f"<h5 style='text-align: center;'>{titulos_low[i]}</h5>", unsafe_allow_html=True)
-        df_top = df_filtrado[df_filtrado['Linea'] == linea].copy()
-        if df_top.empty:
+        st.markdown(f"<h5 style='text-align:center'>{titulos_low[i]}</h5>", unsafe_allow_html=True)
+        t = dff[dff["linea"] == linea]
+        if t.empty:
             st.info("Sin datos.")
-        else:
-            df_agg = df_top.groupby('Apellidos_Nombres', dropna=True).agg({
-                'Cantidad_Completada': 'sum',
-                'Tiempo_Corrida': 'sum'
-            }).reset_index()
+            continue
+        agg = t.groupby("oper_norm", dropna=True).agg(prod=("prod_norm","sum"), corr=("corr_norm","sum")).reset_index()
+        agg["sacos/hora"] = agg["prod"].div(agg["corr"].replace(0, pd.NA)).fillna(0.0)
+        tabla = agg[["oper_norm","sacos/hora"]].sort_values("sacos/hora", ascending=True).head(10).rename(columns={"oper_norm":"Operario"})
+        st.dataframe(tabla.style.set_table_attributes('class="styled-table"').format({"sacos/hora":"{:.2f}"}), use_container_width=True, hide_index=True)
 
-            denom = df_agg['Tiempo_Corrida'].replace(0, pd.NA)
-            df_agg['sacos/hora'] = df_agg['Cantidad_Completada'].div(denom).fillna(0.0)
-
-            df_agg = df_agg[['Apellidos_Nombres', 'sacos/hora']].sort_values(by='sacos/hora', ascending=True).head(10)
-            df_agg = df_agg.rename(columns={'Apellidos_Nombres': 'Operario'})
-
-            st.dataframe(
-                df_agg.style
-                    .set_table_attributes('class="styled-table"')
-                    .set_properties(**{'background-color': '#111','color': 'white','border': '1px solid #444'})
-                    .format({'sacos/hora': '{:.2f}'}),
-                use_container_width=True,
-                hide_index=True
-            )
-
-# =========================
-#   CAUSAS TIEMPO PERDIDO
-# =========================
+# ——————————————————————————————————————
+# Causas de tiempo perdido
+# ——————————————————————————————————————
 st.markdown("<h4>⏳ Causas de tiempo perdido por línea</h4>", unsafe_allow_html=True)
+lineas_obj = ["filete_gasa", "filete_leno", "planas", "Auto7", "corte_gasa"]
 
-lineas_objetivo = ['filete_gasa', 'filete_leno', 'planas', 'Auto7', 'corte_gasa']
-
-for i in range(0, len(lineas_objetivo), 2):
+for i in range(0, len(lineas_obj), 2):
     cols = st.columns(2)
     for j in range(2):
-        if i + j >= len(lineas_objetivo):
-            continue
-        linea = lineas_objetivo[i + j]
+        if i + j >= len(lineas_obj): break
+        linea = lineas_obj[i + j]
         with cols[j]:
-            df_linea = df_filtrado[df_filtrado['Linea'] == linea].copy()
-
-            # Protección por columnas faltantes
-            if 'Causa_Paro' not in df_linea.columns or 'Tiempo_Perdido' not in df_linea.columns:
-                st.markdown(f"<p style='text-align: center; font-size: 9px; color: gray;'>Sin columnas de causas/tiempos</p>", unsafe_allow_html=True)
+            t = dff[dff["linea"] == linea].copy()
+            if col_causa is None or col_tperd is None or t.empty or t["tperd_norm"].sum() == 0:
+                st.markdown(f"<p style='text-align:center; font-size: 9px; color: gray;'>Sin datos</p>", unsafe_allow_html=True)
                 continue
+            causas = t.groupby("causa_norm")["tperd_norm"].sum().sort_values(ascending=True).tail(5)
+            causas.index = [c[:20] + "…" if isinstance(c, str) and len(c) > 20 else c for c in causas.index]
+            fig, ax = plt.subplots(figsize=(3, 2))
+            causas.plot(kind="barh", ax=ax, color=blues_colors(len(causas)))
+            ax.set_title(linea.upper(), color="white", fontsize=9)
+            ax.set_xlabel("Horas", color="white", fontsize=8)
+            ax.set_ylabel(""); ax.tick_params(colors="white", labelsize=7)
+            fig.tight_layout(pad=0.3); st.pyplot(fig)
 
-            causas = (
-                df_linea.groupby('Causa_Paro')['Tiempo_Perdido']
-                .sum()
-                .sort_values(ascending=True)
-            )
-
-            if causas.empty:
-                st.markdown(f"<p style='text-align: center; font-size: 9px; color: gray;'>Sin datos</p>", unsafe_allow_html=True)
-            else:
-                # Top 5 (orden ascendente para coherencia)
-                causas = causas.tail(5)
-                # recortar etiquetas largas
-                causas.index = [c[:20] + '…' if isinstance(c, str) and len(c) > 20 else c for c in causas.index]
-
-                fig_causa, ax_causa = plt.subplots(figsize=(3, 2))
-                causas.plot(kind='barh', ax=ax_causa, color=blues_colors(len(causas)))
-                ax_causa.set_title(linea.upper(), color='white', fontsize=9)
-                ax_causa.set_xlabel("Horas", color='white', fontsize=8)
-                ax_causa.set_ylabel("")
-                ax_causa.tick_params(colors='white', labelsize=7)
-                fig_causa.tight_layout(pad=0.3)
-                st.pyplot(fig_causa)
-
-# =========================
-#        PIE
-# =========================
+# ——————————————————————————————————————
+# Pie
+# ——————————————————————————————————————
 st.markdown("""
-<hr style="border: 1px solid #444;">
-<p style="text-align: center; font-size: 14px; color: gray;">
+<hr style="border:1px solid #444;">
+<p style="text-align:center; font-size:14px; color:gray;">
     🤖 Generado por <strong>CiplasBot</strong> - creado por Ing. Wilson Calderón
 </p>
 """, unsafe_allow_html=True)
