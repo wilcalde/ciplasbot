@@ -20,19 +20,20 @@ from workflows.supervision_questions import (
     ask_supervision_questions
 )
 
-# 👇 Nuevo: Gestor NLU de tareas (sistema por lenguaje natural)
+# 👇 Gestor NLU de tareas
 from services.tasks_manager import (
-    handle_followup,          # maneja pasos faltantes (pedir título, desambiguar ID, etc.)
-    maybe_handle_task_message, # interpreta la intención (crear, ver, editar, eliminar)
-    send_task_menu            # permite abrir el menú con /nueva_tarea o /tareas
+    handle_followup,
+    maybe_handle_task_message,
+    send_task_menu
 )
+
+# 👇 Ventana WhatsApp 24h (NUEVO)
+from services.wa_window_manager import record_inbound, canon_phone_e164_co
 
 app = FastAPI()
 
 # 📂 Directorio de tareas (opcional; no se usa para almacenamiento principal)
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks")
-
-# Asegurar carpeta CONFIG_DIR existe
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
 WEBHOOK_URL = "https://hook.make.com/tu_webhook"  # 👉 Reemplaza con tu URL real
@@ -44,11 +45,9 @@ client = OpenAI()
 # =========================
 # Utilidades
 # =========================
-
 def normalize_phone(p: str) -> str:
     """
-    Deja solo dígitos en el número para que coincida con el usado en archivos de sesión.
-    Ej: '+57 317-638-0061' -> '573176380061'
+    Deja solo dígitos en el número (ej: '+57 317-638-0061' -> '573176380061').
     """
     if not p:
         return ""
@@ -121,20 +120,28 @@ class WhatsAppMessage(BaseModel):
 async def handle_ciplasbot(payload: WhatsAppMessage):
     # 🔢 Normaliza número entrante
     numero = normalize_phone(payload.phone)
+    # 🔑 Clave canónica E.164 CO (coherente con supervision_questions / wa_window_manager)
+    phone_key = canon_phone_e164_co(numero)
 
     # 🗣️ Extrae texto (puede venir None si es media/archivo)
     texto = (payload.message or "").strip()
     texto_low = texto.lower()
 
+    # 🕒 Registrar inbound para abrir/renovar ventana 24h y persistir JSON
+    try:
+        record_inbound(numero)  # acepta cualquier formato; canoniza internamente
+    except Exception as e:
+        print(f"⚠️ Error al registrar inbound para {numero}: {e}")
+
     # Si no hay texto (audio/imagen/documento), pedir texto y salir sin romper el flujo
     if not isinstance(texto, str) or texto == "":
         try:
             send_whatsapp_message(
-                numero,
+                phone_key,
                 "🙏 Para registrar tu respuesta necesito un *mensaje de texto*. ¿Puedes escribirlo, por favor?"
             )
         except Exception as e:
-            print(f"❌ Error enviando aviso de texto requerido a {numero}: {e}")
+            print(f"❌ Error enviando aviso de texto requerido a {phone_key}: {e}")
         return {"status": "ok", "detail": "no text content; user prompted"}
 
     # ——————————————————————————————————————————————
@@ -143,33 +150,33 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
     # Comando para abrir menú (compat con flujo anterior)
     if texto_low.startswith("/nueva_tarea") or texto_low in ("/tareas", "menu tareas", "gestión de tareas", "gestionar tareas"):
         try:
-            send_task_menu(numero)
+            send_task_menu(phone_key)
         except Exception as e:
             print(f"❌ Error enviando menú de tareas: {e}")
         return {"status": "ok", "detail": "task_menu_sent"}
 
     # Si hay un flujo de seguimiento abierto (p.ej. pedir título, desambiguar ID)
-    if handle_followup(texto, numero):
+    if handle_followup(texto, phone_key):
         return {"status": "ok", "detail": "task_followup_handled"}
 
-    # Intentar interpretar el mensaje como acción de tareas (solo admin internamente)
-    nombre_admin = get_user_name_by_phone(numero)
-    if maybe_handle_task_message(texto, nombre_admin, numero):
+    # Intentar interpretar el mensaje como acción de tareas
+    nombre_admin = get_user_name_by_phone(phone_key)
+    if maybe_handle_task_message(texto, nombre_admin, phone_key):
         return {"status": "ok", "detail": "task_message_handled"}
     # ——————————————————————————————————————————————
 
-    # 1️⃣ Cargar sesión de supervisión si existe en disco
-    if numero not in sessions:
+    # 1️⃣ Cargar sesión de supervisión si existe en disco (usa número original; internamente canoniza)
+    if phone_key not in sessions:
         load_supervision_session_if_exists(numero)
 
-    # 2️⃣ Flujo supervisión
-    if numero in sessions and sessions[numero].get("process") == "SUPERVISION":
-        handle_response(numero, texto)
+    # 2️⃣ Flujo supervisión (usar clave canónica para mirar en memoria)
+    if phone_key in sessions and sessions[phone_key].get("process") == "SUPERVISION":
+        handle_response(phone_key, texto)  # handle_response también canoniza internamente
         return {"status": "ok", "detail": "handled by supervision_questions"}
 
-    # 3️⃣ Flujo tradicional por sesión JSON
-    session_file = os.path.join(CONFIG_DIR, f"{numero}_session.json")
-    session = sessions.get(numero)
+    # 3️⃣ Flujo tradicional por sesión JSON (legacy)
+    session_file = os.path.join(CONFIG_DIR, f"{phone_key}_session.json")
+    session = sessions.get(phone_key)
 
     # Si no hay sesión en memoria, intenta cargar desde archivo
     if not session:
@@ -178,20 +185,20 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
             try:
                 with open(session_file, encoding="utf-8") as f:
                     session = json.load(f)
-                sessions[numero] = session
+                sessions[phone_key] = session
             except Exception as e:
                 print(f"❌ Error cargando sesión desde archivo: {e}")
                 session = None
         else:
             # Sin flujo activo -> IA general
-            nombre = get_user_name_by_phone(numero)
-            respuesta = respuesta_inteligente(texto, nombre, numero)
+            nombre = get_user_name_by_phone(phone_key)
+            respuesta = respuesta_inteligente(texto, nombre, phone_key)
             try:
                 # Evita enviar textos vacíos si alguna ruta anterior ya respondió
                 if respuesta and respuesta.strip().lower() not in ("ok",):
-                    send_whatsapp_message(numero, respuesta)
+                    send_whatsapp_message(phone_key, respuesta)
             except Exception as e:
-                print(f"❌ Error enviando respuesta general a {numero}: {e}")
+                print(f"❌ Error enviando respuesta general a {phone_key}: {e}")
             return {"status": "no_flow", "reply": respuesta}
 
     # Validación de flujo
@@ -201,11 +208,11 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
     if not flow or step_index >= len(flow):
         reply = "✅ Ya completaste todas las preguntas. Si deseas empezar de nuevo, escribe /start o espera el próximo cuestionario."
         try:
-            send_whatsapp_message(numero, reply)
+            send_whatsapp_message(phone_key, reply)
         except Exception as e:
-            print(f"❌ Error enviando mensaje de flujo finalizado a {numero}: {e}")
+            print(f"❌ Error enviando mensaje de flujo finalizado a {phone_key}: {e}")
         # Limpieza suave en memoria; NO borra archivo si quieres mantenerlo
-        sessions.pop(numero, None)
+        sessions.pop(phone_key, None)
         return {"status": "done", "detail": "flow completed or index out of range"}
 
     current_step = flow[step_index]
@@ -224,16 +231,16 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
             f"👉 Escribe el número de la pregunta que deseas corregir."
         )
         session["editing"] = True
-        sessions[numero] = session
+        sessions[phone_key] = session
         try:
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(session, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"❌ Error guardando sesión (modo edición): {e}")
         try:
-            send_whatsapp_message(numero, reply)
+            send_whatsapp_message(phone_key, reply)
         except Exception as e:
-            print(f"❌ Error enviando listado de edición a {numero}: {e}")
+            print(f"❌ Error enviando listado de edición a {phone_key}: {e}")
         return {"status": "ok", "mode": "editing", "reply": reply}
 
     if session.get("editing"):
@@ -248,16 +255,16 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
                 session.pop("editing", None)
         except ValueError:
             reply = "⚠️ Por favor, escribe solo el número de la pregunta a corregir."
-        sessions[numero] = session
+        sessions[phone_key] = session
         try:
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(session, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"❌ Error guardando sesión (selección de edición): {e}")
         try:
-            send_whatsapp_message(numero, reply)
+            send_whatsapp_message(phone_key, reply)
         except Exception as e:
-            print(f"❌ Error enviando prompt de corrección a {numero}: {e}")
+            print(f"❌ Error enviando prompt de corrección a {phone_key}: {e}")
         return {"status": "ok", "mode": "editing", "reply": reply}
 
     # 5️⃣ Registrar respuesta del paso actual y avanzar
@@ -275,7 +282,7 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
         reply = get_prompt(flow[session['step_index']], session['process'])
 
         # Guardar progreso intermedio en memoria y disco
-        sessions[numero] = session
+        sessions[phone_key] = session
         try:
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(session, f, indent=2, ensure_ascii=False)
@@ -284,9 +291,9 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
 
         # Enviar siguiente pregunta
         try:
-            send_whatsapp_message(numero, reply)
+            send_whatsapp_message(phone_key, reply)
         except Exception as e:
-            print(f"❌ Error enviando siguiente pregunta a {numero}: {e}")
+            print(f"❌ Error enviando siguiente pregunta a {phone_key}: {e}")
         return {"status": "ok", "step": session.get("step_index"), "reply": reply}
 
     # 🏁 Última respuesta: enviar a Make y notificar
@@ -298,20 +305,20 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
         print(f"❌ Error enviando a Make: {e}")
 
     # Notificar completado al admin
-    update_alert_status(numero, "completed_alert_sent")
+    update_alert_status(phone_key, "completed_alert_sent")
     admin_phone = get_admin_phone()
     if admin_phone:
         try:
-            nombre = get_user_name_by_phone(numero)
+            nombre = get_user_name_by_phone(phone_key)
             send_whatsapp_message(
                 admin_phone,
-                f"✅ *Informe completado:*\nEl supervisor *{nombre}* ({numero}) completó su informe diario."
+                f"✅ *Informe completado:*\nEl supervisor *{nombre}* ({phone_key}) completó su informe diario."
             )
         except Exception as e:
             print(f"❌ Error notificando al admin: {e}")
 
     # Guardar sesión final (no borrar archivo si deseas conservarlo)
-    sessions[numero] = session
+    sessions[phone_key] = session
     try:
         with open(session_file, "w", encoding="utf-8") as f:
             json.dump(session, f, indent=2, ensure_ascii=False)
@@ -321,8 +328,8 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
     # Agradecimiento al supervisor
     reply = "✅ Gracias. Toda la información ha sido registrada y enviada a gerencia. 🙌"
     try:
-        send_whatsapp_message(numero, reply)
+        send_whatsapp_message(phone_key, reply)
     except Exception as e:
-        print(f"❌ Error enviando confirmación final a {numero}: {e}")
+        print(f"❌ Error enviando confirmación final a {phone_key}: {e}")
 
     return {"status": "ok", "detail": "done"}

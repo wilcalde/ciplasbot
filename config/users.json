@@ -4,8 +4,22 @@
       "name": "orlando_diaz",
       "role": "Supervisor",
       "process": "FILETEADO",
-      "phone": "573168515237",
+      "phone": "573176405985",
       "url": "https://ciplasbot-gobcxnnkmwtew3km7lxm7n.streamlit.app/"
+    },
+    {
+      "name": "Orlando_Guio",
+      "role": "Supervisor",
+      "process": "IMPRESION RTR",
+      "phone": "573168308454",
+      "url": "https://ciplasbot-mjlughbbmpx3wzamjhlwe2.streamlit.app/"
+    },
+    {
+      "name": "Ernesto_Jaimes",
+      "role": "Supervisor",
+      "process": "CUERDAS",
+      "phone": "573176421624",
+      "url": "https://ciplasbot-cuerdas.streamlit.app/"
     },
     {
       "name": "Wilson Calderon",

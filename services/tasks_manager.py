@@ -1,5 +1,9 @@
 # services/tasks_manager.py
 # Gestión de tareas por lenguaje natural para CiplasBot
+# - Asignación a supervisores (tolerante a acentos, _, ., - y @)
+# - Notificación al supervisor al crear
+# - Migración de task.json para añadir assignee_*
+# - Recordatorios: admin + supervisores
 
 import os
 import json
@@ -14,29 +18,34 @@ from services.whatsapp_service import send_whatsapp_message
 from services.session_memory import CONFIG_DIR, sessions
 from workflows.daily_report import get_admin_phone  # usa users.json
 
+VERSION = "services.tasks_manager v2.3"
+TASKS_DEBUG = True
+print(f"🔧 {VERSION} importado")
+
 # =========================
 # RUTAS Y ARCHIVOS
 # =========================
 TASKS_FILE = os.path.join(CONFIG_DIR, "task.json")
+USERS_FILE = os.path.join(CONFIG_DIR, "users.json")
 os.makedirs(CONFIG_DIR, exist_ok=True)
-if not os.path.exists(TASKS_FILE):
-    with open(TASKS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"tasks": []}, f, ensure_ascii=False, indent=2)
+
+def _ensure_tasks_file():
+    if not os.path.exists(TASKS_FILE):
+        with open(TASKS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"tasks": []}, f, ensure_ascii=False, indent=2)
+
+_ensure_tasks_file()
 
 # =========================
 # CLIENTE OPENAI
 # =========================
 client = OpenAI()
-OPENAI_MODEL = "gpt-4o-mini"  # o "o4-mini" si prefieres
+OPENAI_MODEL = "gpt-4o-mini"  # o "o4-mini"
 
 # =========================
-# UTILIDADES DE TEXTO / NORMALIZACIÓN
+# HELPERS TEXTO / TELÉFONOS / USUARIOS
 # =========================
 def _fix_mojibake(s: str) -> str:
-    """
-    Intenta reparar textos UTF-8 mal decodificados como cp1252/latin1 (mojibake),
-    p.ej. 'MiÃ©rcoles' -> 'Miércoles'. Si no aplica, devuelve s.
-    """
     if not isinstance(s, str):
         return ""
     try:
@@ -45,19 +54,158 @@ def _fix_mojibake(s: str) -> str:
         return s
 
 def _strip_accents(s: str) -> str:
-    """Elimina acentos/diacríticos sin romper la ñ (ya que es propia) si se desea."""
     if not isinstance(s, str):
         return ""
-    # Para fechas permitiremos 'manana' además de 'mañana', así que aquí removemos todo.
     nfkd = unicodedata.normalize("NFD", s)
     return "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
 
 def _safe_lower(s: str) -> str:
-    """Repara mojibake y pasa a minúscula con espacios colapsados."""
-    s2 = _fix_mojibake(s)
-    s2 = s2.lower()
+    s2 = _fix_mojibake(s or "")
     s2 = " ".join(s2.split())
-    return s2
+    return s2.lower()
+
+def _normalize_name(s: str) -> str:
+    """
+    Normaliza nombres para comparación:
+    - minúsculas
+    - sin tildes
+    - convierte _, ., - y @ en espacios
+    - colapsa espacios
+    """
+    if not isinstance(s, str):
+        return ""
+    s = _strip_accents(_safe_lower(s))
+    s = s.replace("@", " ")
+    s = re.sub(r"[_\.\-]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _pretty_display_name(s: str) -> str:
+    """Convierte 'orlando_diaz' o 'orlando.diaz' a 'Orlando Diaz' para mostrar."""
+    s = re.sub(r"[_\.\-]+", " ", (s or "").strip())
+    return " ".join(w.capitalize() for w in s.split())
+
+def _digits_only(s: str) -> str:
+    return "".join(ch for ch in str(s) if ch.isdigit())
+
+def _last10(d: str) -> str:
+    d2 = _digits_only(d)
+    return d2[-10:] if len(d2) >= 10 else d2
+
+def _canon_e164_co(phone: str) -> str:
+    d = _digits_only(phone)
+    if d.startswith("57") and len(d) == 12:
+        return d
+    tail = _last10(d)
+    return ("57" + tail) if tail else d
+
+def _normalize_phone(phone: str) -> str:
+    return _canon_e164_co(phone)
+
+def _strip_quotes(s: str) -> str:
+    s = (s or "").strip()
+    quote_chars = '\"\'“”«»'
+    if len(s) >= 2 and s[0] in quote_chars and s[-1] in quote_chars:
+        return s[1:-1].strip()
+    return s.strip("“”«»\"'").strip()
+
+def _load_users() -> List[dict]:
+    if not os.path.exists(USERS_FILE):
+        return []
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("users", [])
+
+def _is_admin(phone: str) -> bool:
+    """Compara con admin de users.json; *fallback* por rol."""
+    try:
+        admin = get_admin_phone()
+        return str(_normalize_phone(phone)).strip() == str(_normalize_phone(admin)).strip()
+    except Exception:
+        p = _normalize_phone(phone)
+        for u in _load_users():
+            if _normalize_phone(u.get("phone", "")) == p and (u.get("role", "").lower() in {"administrador", "admin"}):
+                return True
+        return False
+
+def _list_supervisors() -> List[dict]:
+    sups = [u for u in _load_users() if (u.get("role", "").strip().lower() == "supervisor")]
+    if TASKS_DEBUG:
+        print(f"👥 SUPERVISORES: {[u.get('name') for u in sups]}")
+    return sups
+
+def _find_supervisor_by_hint(hint: str) -> Optional[dict]:
+    """
+    Busca supervisor por teléfono o nombre (tolerante a acentos/espacios/_,.-,@).
+    """
+    if not hint:
+        return None
+    sups = _list_supervisors()
+    if not sups:
+        return None
+
+    # Teléfono
+    h_phone = _normalize_phone(hint)
+    if _digits_only(h_phone):
+        for u in sups:
+            if _normalize_phone(u.get("phone", "")) == h_phone:
+                return u
+
+    # Nombre (normalizado en ambos lados)
+    h_norm = _normalize_name(hint)
+    exact = [u for u in sups if _normalize_name(u.get("name", "")) == h_norm]
+    if len(exact) == 1:
+        return exact[0]
+
+    contain = [u for u in sups if h_norm in _normalize_name(u.get("name", ""))]
+    if len(contain) == 1:
+        return contain[0]
+    if len(contain) > 1:
+        contain.sort(key=lambda u: len(u.get("name", "")), reverse=True)
+        return contain[0]
+    return None
+
+def _fallback_match_supervisor_in_text(text: str) -> Optional[dict]:
+    """
+    Si el NLU no trae assignee, intenta detectar por:
+    - @menciones
+    - frases: 'a/para/asignar a <nombre>'
+    - substring del nombre del supervisor
+    """
+    if not text:
+        return None
+
+    # 1) @menciones (acepta '_' '.' '-')
+    m = re.findall(r"@([A-Za-zÁÉÍÓÚÑáéíóúñ0-9_.\-]+)", text)
+    for tag in m or []:
+        sup = _find_supervisor_by_hint(tag)
+        if sup:
+            if TASKS_DEBUG:
+                print(f"🕵️ ASSIGNEE DEBUG: @mención → {sup.get('name')}")
+            return sup
+
+    # 2) Frases: a|para|asignar a + Nombre (1 a 4 tokens). Corta en signos.
+    name_pat = r"[A-Za-zÁÉÍÓÚÑáéíóúñ_.\-]+(?:\s+[A-Za-zÁÉÍÓÚÑáéíóúñ_.\-]+){0,3}"
+    m2 = re.findall(rf"(?:\bpara\b|\ba\b|\basignar\s+a)\s+({name_pat})(?=[\s,:;\"“”'»)]|$)", text, flags=re.IGNORECASE)
+    for chunk in m2 or []:
+        sup = _find_supervisor_by_hint(chunk)
+        if sup:
+            if TASKS_DEBUG:
+                print(f"🕵️ ASSIGNEE DEBUG: frase → {sup.get('name')}")
+            return sup
+
+    # 3) Substring directo del nombre completo (normalizado)
+    txt_norm = _normalize_name(text)
+    best = None
+    best_len = 0
+    for u in _list_supervisors():
+        nm = _normalize_name(u.get("name", ""))
+        if nm and nm in txt_norm and len(nm) > best_len:
+            best = u
+            best_len = len(nm)
+    if best and TASKS_DEBUG:
+        print(f"🕵️ ASSIGNEE DEBUG: substring → {best.get('name')}")
+    return best
 
 # =========================
 # UTILIDADES DE FECHA
@@ -82,25 +230,15 @@ def today_str() -> str:
 
 def parse_due_date(text: str) -> Optional[str]:
     """
-    Interpreta fechas en español:
-      - 'hoy', 'mañana'/'manana', 'pasado mañana'/'pasado manana'
-      - 'en X días'/'en X dias'
-      - YYYY-MM-DD
-      - DD/MM/YYYY
-      - DD-MM-YYYY
-      - '15 de agosto 2025', '15 agosto 2025', '15 de ago 2025'
-        (soporta 'septiembre/setiembre', abreviaturas y mojibake)
-
-    Retorna YYYY-MM-DD o None.
+    Entiende: hoy, mañana/manana, pasado mañana/manana, en X días,
+    YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, '15 de agosto 2025'
     """
     if not text:
         return None
-
     raw = str(text)
-    t = _safe_lower(raw)              # repara mojibake + lower + colapsa espacios
-    t_noacc = _strip_accents(t)       # para capturar 'manana' y 'pasado manana'
+    t = _safe_lower(raw)
+    t_noacc = _strip_accents(t)
 
-    # Palabras clave
     if "hoy" in t:
         return datetime.now().strftime("%Y-%m-%d")
     if "pasado mañana" in t or "pasado manana" in t_noacc:
@@ -108,10 +246,7 @@ def parse_due_date(text: str) -> Optional[str]:
     if "mañana" in t or "manana" in t_noacc:
         return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # "en X días" / "en X dias"
-    m = re.search(r"en\s+(\d{1,2})\s+d[ií]as", t)
-    if not m:
-        m = re.search(r"en\s+(\d{1,2})\s+dias", t_noacc)
+    m = re.search(r"en\s+(\d{1,2})\s+d[ií]as", t) or re.search(r"en\s+(\d{1,2})\s+dias", t_noacc)
     if m:
         try:
             add = int(m.group(1))
@@ -119,12 +254,10 @@ def parse_due_date(text: str) -> Optional[str]:
         except Exception:
             return None
 
-    # YYYY-MM-DD
     m = re.search(r"\b(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b", t)
     if m:
         return m.group(0)
 
-    # DD/MM/YYYY
     m = re.search(r"\b(0?[1-9]|[12]\d|3[01])/(0?[1-9]|1[0-2])/(20\d{2})\b", t)
     if m:
         d, mth, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -133,7 +266,6 @@ def parse_due_date(text: str) -> Optional[str]:
         except Exception:
             return None
 
-    # DD-MM-YYYY
     m = re.search(r"\b(0?[1-9]|[12]\d|3[01])-(0?[1-9]|1[0-2])-(20\d{2})\b", t)
     if m:
         d, mth, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -142,8 +274,6 @@ def parse_due_date(text: str) -> Optional[str]:
         except Exception:
             return None
 
-    # DD [de] MES [de] YYYY  (con variantes y abreviaturas)
-    # Usamos grupos con nombre para evitar confusión de índices
     month_pat = (
         r"(?:ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|abr(?:il)?|may(?:o)?|jun(?:io)?|"
         r"jul(?:io)?|ago(?:sto)?|sep(?:t|tiembre)?|set(?:iembre)?|oct(?:ubre)?|"
@@ -157,19 +287,16 @@ def parse_due_date(text: str) -> Optional[str]:
         d = int(m.group("day"))
         month_raw = m.group("month")
         y = int(m.group("year"))
-        # Normalizamos clave de mes: tomamos 3 letras y full
-        cand = [_safe_lower(month_raw), _safe_lower(month_raw)[:3]]
-        for key in cand:
+        for key in (_safe_lower(month_raw), _safe_lower(month_raw)[:3]):
             if key in MONTHS_ES:
                 try:
                     return datetime(y, MONTHS_ES[key], d).strftime("%Y-%m-%d")
                 except Exception:
                     return None
-
     return None
 
 # =========================
-# PERSISTENCIA
+# PERSISTENCIA + MIGRACIÓN
 # =========================
 def _read_all() -> Dict[str, Any]:
     with open(TASKS_FILE, "r", encoding="utf-8") as f:
@@ -179,8 +306,42 @@ def _write_all(data: Dict[str, Any]) -> None:
     with open(TASKS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def _migrate_tasks_schema_add_assignee_fields() -> None:
+    """
+    Asegura que todas las tareas tengan assignee_* y priority en minúsculas.
+    """
+    try:
+        data = _read_all()
+    except FileNotFoundError:
+        return
+
+    tasks = data.get("tasks", [])
+    changed = False
+
+    for t in tasks:
+        if "assignee_name" not in t:
+            t["assignee_name"] = ""
+            changed = True
+        if "assignee_phone" not in t:
+            t["assignee_phone"] = ""
+            changed = True
+        if "assignee_phone_raw" not in t:
+            t["assignee_phone_raw"] = ""
+            changed = True
+        if "priority" in t and isinstance(t["priority"], str):
+            newp = t["priority"].strip().lower()
+            if newp != t["priority"]:
+                t["priority"] = newp
+                changed = True
+
+    if changed:
+        _write_all({"tasks": tasks})
+        print("🛠️ task.json migrado: campos assignee_* + priority normalizada.")
+
+_migrate_tasks_schema_add_assignee_fields()
+
 # =========================
-# NLU CON OPENAI (Chat Completions + function calling)
+# NLU (OpenAI function calling)
 # =========================
 _TASK_INTENT_SYSTEM = (
     "Eres un parser NLU en español para gestión de tareas. "
@@ -191,18 +352,22 @@ def _task_intent_schema():
     return {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["create", "view", "delete", "edit", "unknown"]
-            },
+            "action": {"type": "string", "enum": ["create", "view", "delete", "edit", "unknown"]},
             "task": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
                     "title": {"type": "string"},
                     "description": {"type": "string"},
-                    "priority": {"type": "string", "enum": ["alta","media","baja",""]},
-                    "due_date_text": {"type": "string"}
+                    "priority": {"type": "string", "enum": ["alta", "media", "baja", ""]},
+                    "due_date_text": {"type": "string"},
+                    "assignee": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "phone": {"type": "string"}
+                        }
+                    }
                 }
             },
             "filters": {
@@ -210,10 +375,10 @@ def _task_intent_schema():
                 "properties": {
                     "time": {
                         "type": "string",
-                        "enum": ["hoy","mañana","semana","todas","vencidas","pendientes","fecha"]
+                        "enum": ["hoy", "mañana", "semana", "todas", "vencidas", "pendientes", "fecha"]
                     },
                     "date": {"type": "string"},
-                    "status": {"type":"string", "enum":["pendiente","completada","todas"]}
+                    "status": {"type": "string", "enum": ["pendiente", "completada", "todas"]}
                 }
             }
         },
@@ -221,17 +386,18 @@ def _task_intent_schema():
     }
 
 def nlu_intent(user_text: str) -> Dict[str, Any]:
-    """
-    Usa Chat Completions + function calling.
-    Retorna un dict con: action, task{...}, filters{...}
-    """
     examples = """
     Instrucciones:
-    - Detecta intención: create | view | delete | edit | unknown.
-    - Extrae task.title, task.description, task.priority (alta|media|baja), task.due_date_text (texto tal cual).
-    - En 'view' llena filters.time si aplica: hoy/mañana/semana/vencidas/pendientes/todas/fecha.
-    - En 'delete' o 'edit', si no dan id, usa title aproximado en task.title.
-    - SOLO JSON.
+    - Detecta intención: create|view|delete|edit|unknown.
+    - Extrae:
+        task.title  → sin comillas si el usuario las puso.
+        task.description → opcional.
+        task.priority → alta|media|baja.
+        task.due_date_text → tal cual el usuario lo dijo.
+        task.assignee.name/phone → si dice "a X", "para X", "asignar a X", "@X".
+    - En 'view' llena filters.time si aplica.
+    - En 'delete' o 'edit', si no dan id, usa task.title aproximado.
+    - Solo JSON.
     """
 
     messages = [
@@ -240,16 +406,14 @@ def nlu_intent(user_text: str) -> Dict[str, Any]:
         {"role": "user", "content": user_text},
     ]
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "extract_task_intent",
-                "description": "Detecta la intención y extrae campos de tarea/filtros.",
-                "parameters": _task_intent_schema(),
-            },
-        }
-    ]
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "extract_task_intent",
+            "description": "Detecta la intención y extrae campos de tarea/filtros.",
+            "parameters": _task_intent_schema(),
+        },
+    }]
 
     try:
         resp = client.chat.completions.create(
@@ -262,14 +426,16 @@ def nlu_intent(user_text: str) -> Dict[str, Any]:
         choice = resp.choices[0]
         msg = choice.message
 
-        # Preferimos tool_calls (function calling)
         if getattr(msg, "tool_calls", None):
             args = msg.tool_calls[0].function.arguments
+            if TASKS_DEBUG:
+                print(f"🧭 NLU DEBUG: {args}")
             return json.loads(args)
 
-        # Fallback: intentar contenido directo como JSON
         if msg.content:
             try:
+                if TASKS_DEBUG:
+                    print(f"🧭 NLU DEBUG (content): {msg.content}")
                 return json.loads(msg.content)
             except Exception:
                 pass
@@ -281,21 +447,16 @@ def nlu_intent(user_text: str) -> Dict[str, Any]:
         return {"action": "unknown"}
 
 # =========================
-# BUSQUEDA / MATCH DE TAREAS
+# BÚSQUEDA / MATCH
 # =========================
 def _normalize(s: str) -> str:
-    # Normaliza para comparación: repara mojibake, lower y colapsa espacios
     return re.sub(r"\s+", " ", _safe_lower(s)).strip()
 
 def _find_tasks_by_title_like(tasks: List[Dict[str, Any]], title_like: str) -> List[Dict[str, Any]]:
     if not title_like:
         return []
     key = _normalize(title_like)
-    out = []
-    for t in tasks:
-        if key in _normalize(t.get("title", "")):
-            out.append(t)
-    return out
+    return [t for t in tasks if key in _normalize(t.get("title", ""))]
 
 def _find_task_by_id(tasks: List[Dict[str, Any]], tid: str) -> Optional[Dict[str, Any]]:
     for t in tasks:
@@ -304,19 +465,38 @@ def _find_task_by_id(tasks: List[Dict[str, Any]], tid: str) -> Optional[Dict[str
     return None
 
 # =========================
-# CRUD DE TAREAS
+# CRUD
 # =========================
 def _ensure_task_dict(task_like: Dict[str, Any]) -> Dict[str, Any]:
-    """Normaliza/crea una tarea base."""
     return {
         "id": (task_like.get("id") or uuid.uuid4().hex[:8]),
-        "title": (task_like.get("title") or "").strip(),
+        "title": _strip_quotes((task_like.get("title") or "")),
         "description": (task_like.get("description") or "").strip(),
         "priority": (task_like.get("priority") or "media").strip().lower(),
-        "due": None,  # YYYY-MM-DD
+        "due": None,
         "status": "pendiente",
+        "assignee_name": "",
+        "assignee_phone": "",
+        "assignee_phone_raw": "",
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+def _notify_supervisor_new_task(t: Dict[str, Any]) -> None:
+    phone = t.get("assignee_phone_raw") or t.get("assignee_phone")
+    if not phone:
+        return
+    msg = (
+        "🆕 *Nueva tarea asignada*\n\n"
+        f"• *Nombre:* {t.get('title','')}\n"
+        f"• *Vence:* {t.get('due','—')}\n"
+        f"• *Prioridad:* {t.get('priority','')}\n"
+        f"• *ID:* {t.get('id','')}\n\n"
+        "Por favor, revísala y ejecútala según prioridad. ✅"
+    )
+    try:
+        send_whatsapp_message(phone, msg)
+    except Exception as e:
+        print(f"⚠️ Error notificando al supervisor ({phone}): {e}")
 
 def create_task_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     data = _read_all()
@@ -331,8 +511,39 @@ def create_task_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     if not t["title"]:
         raise ValueError("Falta el título de la tarea.")
 
-    data["tasks"].append(t)
+    # Asignación: (1) NLU
+    assignee = task_in.get("assignee") or {}
+    hint_name = (assignee.get("name") or "").strip()
+    hint_phone = (assignee.get("phone") or "").strip()
+    chosen = None
+    if hint_phone:
+        chosen = _find_supervisor_by_hint(hint_phone)
+    if not chosen and hint_name:
+        chosen = _find_supervisor_by_hint(hint_name)
+
+    # (2) Fallback con texto crudo
+    raw_txt = intent.get("__raw_text") or ""
+    if not chosen and raw_txt:
+        chosen = _fallback_match_supervisor_in_text(raw_txt)
+
+    if chosen:
+        raw_name = chosen.get("name", "").strip()
+        t["assignee_name"] = _pretty_display_name(raw_name) or raw_name
+        t["assignee_phone_raw"] = chosen.get("phone", "").strip()
+        t["assignee_phone"] = _normalize_phone(chosen.get("phone", ""))
+
+    data.setdefault("tasks", []).append(t)
     _write_all(data)
+
+    # Notificar supervisor si aplica
+    if t.get("assignee_phone") or t.get("assignee_phone_raw"):
+        _notify_supervisor_new_task(t)
+        if TASKS_DEBUG:
+            print(f"📣 Notificado supervisor: {t.get('assignee_name')} / {t.get('assignee_phone_raw')}")
+
+    if TASKS_DEBUG:
+        print(f"📝 TAREA CREADA → assignee: {t.get('assignee_name') or '(ninguno)'}")
+
     return t
 
 def list_tasks(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -381,9 +592,6 @@ def list_tasks(filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]
     return tasks
 
 def delete_task(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Elimina por id o por título aproximado. Retorna lista de tareas eliminadas.
-    """
     data = _read_all()
     tasks = data.get("tasks", [])
     task_in = intent.get("task", {}) or {}
@@ -394,6 +602,8 @@ def delete_task(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
     keep: List[Dict[str, Any]] = []
 
     if target_id:
+        if not re.fullmatch(r"(?:[0-9a-f]{8}|T\d{17,})", target_id):
+            raise ValueError("ID de tarea con formato inválido.")
         for t in tasks:
             if t.get("id") == target_id:
                 removed.append(t)
@@ -415,10 +625,6 @@ def delete_task(intent: Dict[str, Any]) -> List[Dict[str, Any]]:
     return removed
 
 def edit_task(intent: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Edita por id o por título aproximado (si hay 1 match).
-    Campos editables: title, description, priority, due (por due_date_text), status.
-    """
     data = _read_all()
     tasks = data.get("tasks", [])
     task_in = intent.get("task", {}) or {}
@@ -441,7 +647,7 @@ def edit_task(intent: Dict[str, Any]) -> Dict[str, Any]:
 
     # Actualizaciones
     if task_in.get("title"):
-        target["title"] = task_in["title"].strip()
+        target["title"] = _strip_quotes(task_in["title"])
     if task_in.get("description") is not None:
         target["description"] = (task_in["description"] or "").strip()
     if task_in.get("priority"):
@@ -450,6 +656,22 @@ def edit_task(intent: Dict[str, Any]) -> Dict[str, Any]:
             target["priority"] = pr
     if task_in.get("due_date_text"):
         target["due"] = parse_due_date(task_in["due_date_text"])
+
+    # Reasignación (NLU + fallback)
+    assignee = task_in.get("assignee") or {}
+    raw_txt = intent.get("__raw_text") or ""
+    chosen = None
+    if assignee.get("phone"):
+        chosen = _find_supervisor_by_hint(assignee.get("phone"))
+    if not chosen and assignee.get("name"):
+        chosen = _find_supervisor_by_hint(assignee.get("name"))
+    if not chosen and raw_txt:
+        chosen = _fallback_match_supervisor_in_text(raw_txt)
+    if chosen:
+        raw_name = chosen.get("name", "").strip()
+        target["assignee_name"] = _pretty_display_name(raw_name) or raw_name
+        target["assignee_phone_raw"] = chosen.get("phone", "").strip()
+        target["assignee_phone"] = _normalize_phone(chosen.get("phone", ""))
 
     # Permitir status desde filtros (opcional)
     st = (intent.get("filters", {}) or {}).get("status", "")
@@ -466,17 +688,17 @@ def _format_task_line(t: Dict[str, Any], idx: int) -> str:
     pr_emoji = {"alta": "🔴", "media": "🟡", "baja": "🟢"}.get(t.get("priority", "media"), "🟡")
     st_emoji = "✅" if t.get("status") == "completada" else "⏳"
     due_txt = t.get("due") or "—"
-    return f"{idx}. {st_emoji} {pr_emoji} [{t['id']}] {t['title']} 〰️ vence: {due_txt}"
+    who = f" • 👤 {t['assignee_name']}" if t.get("assignee_name") else ""
+    return f"{idx}. {st_emoji} {pr_emoji} [{t['id']}] {t['title']} 〰️ vence: {due_txt}{who}"
 
 def send_task_menu(to_phone: str) -> None:
     msg = (
         "🗂 *Gestión de tareas*\n"
-        "Dime en lenguaje natural lo que quieres y lo interpreto. Ejemplos:\n"
-        "• *Crea* una tarea para mañana comprar Vistamaxx, prioridad alta.\n"
-        "• *Ver* tareas pendientes hoy.\n"
-        "• *Editar* la tarea comprar Vistamaxx, pásala al 20-08-2025.\n"
-        "• *Eliminar* la tarea comprar Vistamaxx.\n\n"
-        "Acciones disponibles: *Crear nueva tarea*, *Ver tareas pendientes*, *Eliminar tarea*, *Editar tarea*."
+        "Ejemplos:\n"
+        "• Crea tarea *a Orlando Diaz*: \"Enviar informe PNC\", vence *mañana*, prioridad *alta*.\n"
+        "• Ver tareas pendientes hoy.\n"
+        "• Editar tarea 'Enviar informe PNC', pásala al 20-08-2025.\n"
+        "• Eliminar tarea 'Enviar informe PNC'."
     )
     send_whatsapp_message(to_phone, msg)
 
@@ -490,7 +712,7 @@ def _send_list(to_phone: str, tasks: List[Dict[str, Any]], header: str = "📋 T
     send_whatsapp_message(to_phone, "\n".join(lines))
 
 # =========================
-# FLUJO DE FOLLOW-UP (cuando faltan datos)
+# FOLLOW-UPS
 # =========================
 def _open_flow(user_phone: str, flow: str, payload: Dict[str, Any]):
     sessions[user_phone] = {"flow": flow, "payload": payload}
@@ -500,17 +722,13 @@ def _close_flow(user_phone: str):
         del sessions[user_phone]
 
 def handle_followup(user_text: str, user_phone: str) -> bool:
-    """
-    Si hay un flujo abierto en sessions, intenta procesar el dato faltante.
-    Retorna True si fue manejado (consumido), False si no había flujo.
-    """
     state = sessions.get(user_phone)
     if not state:
         return False
 
     flow = state.get("flow")
     if flow == "task_title_missing":
-        title = user_text.strip()
+        title = _strip_quotes(user_text.strip())
         if len(title) < 3:
             send_whatsapp_message(user_phone, "El título es muy corto. Prueba con algo más descriptivo.")
             return True
@@ -519,26 +737,30 @@ def handle_followup(user_text: str, user_phone: str) -> bool:
         intent.setdefault("task", {})["title"] = title
         try:
             t = create_task_from_intent(intent)
-            send_whatsapp_message(user_phone, f"✅ Tarea creada: [{t['id']}] {t['title']} (vence: {t.get('due') or '—'})")
+            who = f" → 👤 {t.get('assignee_name')}" if t.get("assignee_name") else ""
+            send_whatsapp_message(user_phone, f"✅ Tarea creada: [{t['id']}] {t['title']}{who} (vence: {t.get('due') or '—'})")
         except Exception as e:
             send_whatsapp_message(user_phone, f"⚠️ No pude crear la tarea: {e}")
         _close_flow(user_phone)
         return True
 
     if flow == "task_disambiguate_edit":
-        # Usuario debe responder con un ID
         tid = user_text.strip().strip("[]")
+        if not re.fullmatch(r"(?:[0-9a-f]{8}|T\d{17,})", tid):
+            send_whatsapp_message(user_phone, "ID inválido. Responde con el ID exacto entre corchetes.")
+            return True
         data = _read_all()
         t = _find_task_by_id(data.get("tasks", []), tid)
         if not t:
-            send_whatsapp_message(user_phone, "No encontré ese ID. Por favor responde con un ID válido (texto entre corchetes).")
+            send_whatsapp_message(user_phone, "No encontré ese ID. Intenta nuevamente.")
             return True
         payload = state.get("payload", {})
         intent = payload.get("intent", {})
         intent.setdefault("task", {})["id"] = tid
         try:
             t2 = edit_task(intent)
-            send_whatsapp_message(user_phone, f"✏️ Tarea actualizada: [{t2['id']}] {t2['title']} (vence: {t2.get('due') or '—'})")
+            who = f" → 👤 {t2.get('assignee_name')}" if t2.get("assignee_name") else ""
+            send_whatsapp_message(user_phone, f"✏️ Tarea actualizada: [{t2['id']}] {t2['title']}{who} (vence: {t2.get('due') or '—'})")
         except Exception as e:
             send_whatsapp_message(user_phone, f"⚠️ No pude editar: {e}")
         _close_flow(user_phone)
@@ -546,10 +768,13 @@ def handle_followup(user_text: str, user_phone: str) -> bool:
 
     if flow == "task_disambiguate_delete":
         tid = user_text.strip().strip("[]")
+        if not re.fullmatch(r"(?:[0-9a-f]{8}|T\d{17,})", tid):
+            send_whatsapp_message(user_phone, "ID inválido. Responde con el ID exacto entre corchetes.")
+            return True
         data = _read_all()
         t = _find_task_by_id(data.get("tasks", []), tid)
         if not t:
-            send_whatsapp_message(user_phone, "ID inválido. Responde con el ID entre corchetes de la tarea a eliminar.")
+            send_whatsapp_message(user_phone, "No encontré ese ID. Intenta nuevamente.")
             return True
         intent = state.get("payload", {}).get("intent", {})
         intent.setdefault("task", {})["id"] = tid
@@ -567,41 +792,40 @@ def handle_followup(user_text: str, user_phone: str) -> bool:
     return False
 
 # =========================
-# ENRUTADOR PRINCIPAL
+# ENRUTADOR (SOLO ADMIN)
 # =========================
-def _is_admin(phone: str) -> bool:
-    try:
-        admin = get_admin_phone()
-        return str(phone).strip() == str(admin).strip()
-    except Exception:
-        # Si falla, permitir por ahora
-        return True
+def _is_admin_strict(phone: str) -> bool:
+    return _is_admin(phone)
 
 def maybe_handle_task_message(user_text: str, user_name: str, user_phone: str) -> bool:
-    """
-    Intenta interpretar un mensaje del ADMIN como gestión de tareas.
-    Retorna True si manejó el mensaje (ya envió WhatsApp), False si no es de tareas.
-    """
-    # Solo admin
-    if not _is_admin(user_phone):
+    if not _is_admin_strict(user_phone):
         return False
 
     low = _safe_lower(user_text or "")
-    # Si hay un flujo abierto, que lo procese handle_followup (se llama antes desde main)
     if sessions.get(user_phone):
         return False
 
     intent = nlu_intent(user_text)
     action = intent.get("action", "unknown")
+    intent["__raw_text"] = user_text  # para fallbacks
+
+    # Fallback de asignatario si NLU no lo trajo
+    if action in {"create", "edit"}:
+        tk = intent.get("task", {}) or {}
+        ass = tk.get("assignee") or {}
+        if not ass.get("name") and not ass.get("phone"):
+            sup = _fallback_match_supervisor_in_text(user_text)
+            if sup:
+                intent.setdefault("task", {}).setdefault("assignee", {})
+                intent["task"]["assignee"]["name"] = sup.get("name", "")
+                intent["task"]["assignee"]["phone"] = sup.get("phone", "")
 
     if action == "unknown":
-        # Solo atrapamos si parece intención de tareas (palabras clave)
         if any(k in low for k in ["tarea", "tareas", "pendientes", "crear", "eliminar", "editar", "ver"]):
             send_task_menu(user_phone)
             return True
         return False
 
-    # --- CREATE ---
     if action == "create":
         try:
             tk = intent.get("task", {}) or {}
@@ -610,15 +834,14 @@ def maybe_handle_task_message(user_text: str, user_name: str, user_phone: str) -
                 send_whatsapp_message(user_phone, "🆕 ¿Cuál es el *título* de la tarea?")
                 return True
             t = create_task_from_intent(intent)
-            send_whatsapp_message(user_phone, f"✅ Tarea creada: [{t['id']}] {t['title']} (vence: {t.get('due') or '—'})")
+            who = f" → 👤 {t.get('assignee_name')}" if t.get("assignee_name") else ""
+            send_whatsapp_message(user_phone, f"✅ Tarea creada: [{t['id']}] {t['title']}{who} (vence: {t.get('due') or '—'})")
         except Exception as e:
             send_whatsapp_message(user_phone, f"⚠️ No pude crear la tarea: {e}")
         return True
 
-    # --- VIEW ---
     if action == "view":
         filters = intent.get("filters", {}) or {}
-        # valor por defecto: pendientes
         if not filters.get("status"):
             filters["status"] = "pendiente"
         tasks = list_tasks(filters)
@@ -632,11 +855,10 @@ def maybe_handle_task_message(user_text: str, user_name: str, user_phone: str) -
         elif filters.get("time") == "vencidas":
             header = "⏰ Tareas *vencidas*"
         elif filters.get("time") == "fecha":
-            header = f"📅 Tareas para la *fecha*"
+            header = "📅 Tareas para la *fecha*"
         _send_list(user_phone, tasks, header=header)
         return True
 
-    # --- DELETE ---
     if action == "delete":
         data = _read_all()
         task_in = intent.get("task", {}) or {}
@@ -663,7 +885,6 @@ def maybe_handle_task_message(user_text: str, user_name: str, user_phone: str) -
             send_whatsapp_message(user_phone, f"⚠️ No pude eliminar: {e}")
         return True
 
-    # --- EDIT ---
     if action == "edit":
         data = _read_all()
         task_in = intent.get("task", {}) or {}
@@ -682,7 +903,8 @@ def maybe_handle_task_message(user_text: str, user_name: str, user_phone: str) -
 
         try:
             t = edit_task(intent)
-            send_whatsapp_message(user_phone, f"✏️ Tarea actualizada: [{t['id']}] {t['title']} (vence: {t.get('due') or '—'})")
+            who = f" → 👤 {t.get('assignee_name')}" if t.get("assignee_name") else ""
+            send_whatsapp_message(user_phone, f"✏️ Tarea actualizada: [{t['id']}] {t['title']}{who} (vence: {t.get('due') or '—'})")
         except Exception as e:
             send_whatsapp_message(user_phone, f"⚠️ No pude editar: {e}")
         return True
@@ -690,10 +912,132 @@ def maybe_handle_task_message(user_text: str, user_name: str, user_phone: str) -
     return False
 
 # =========================
-# RECORDATORIO DIARIO PARA EL ADMIN (07:30)
+# RECORDATORIOS
+# =========================
+def _to_date(s: Optional[str]):
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date() if s else None
+    except Exception:
+        return None
+
+def _build_admin_message_for_today_and_overdue() -> str:
+    """Admin: HOY + VENCIDAS (pendientes)."""
+    today = datetime.now().date()
+    all_tasks = _read_all().get("tasks", [])
+    pending = []
+    for t in all_tasks:
+        if t.get("status") != "pendiente":
+            continue
+        d = _to_date(t.get("due"))
+        if d and d <= today:
+            pending.append(t)
+
+    header = f"🧠 *Pendientes HOY + vencidas* ({today.isoformat()})"
+    if not pending:
+        return header + "\nNo tienes tareas pendientes para hoy. ✅"
+
+    prio_rank = {"alta": 0, "media": 1, "baja": 2}
+    pending.sort(key=lambda x: (x.get("due") or "9999-12-31", prio_rank.get(x.get("priority", "media"), 1)))
+
+    lines = [header]
+    for i, t in enumerate(pending, start=1):
+        pr_emoji = {"alta":"🔴","media":"🟡","baja":"🟢"}.get(t.get("priority","media"),"🟡")
+        due = t.get("due") or "—"
+        who = f" • 👤 {t.get('assignee_name')}" if t.get("assignee_name") else ""
+        lines.append(f"{i}. ⏳ {pr_emoji} [{t.get('id')}] {t.get('title')} 〰️ vence: {due}{who}")
+    return "\n".join(lines)
+
+def _build_supervisor_message(name: str, tasks: List[Dict[str, Any]], today_only: bool) -> Optional[str]:
+    today = datetime.now().date()
+    def is_relevant(t):
+        if t.get("status") != "pendiente":
+            return False
+        if not today_only:
+            return True
+        d = _to_date(t.get("due"))
+        return d is not None and d <= today  # hoy + vencidas
+
+    relevant = [t for t in tasks if is_relevant(t)]
+    header = f"📋 *Tareas pendientes* — {name}"
+    sub = "(hoy + vencidas)" if today_only else "(todas)"
+    header = f"{header} {sub}"
+
+    if not relevant:
+        return None
+
+    prio_rank = {"alta": 0, "media": 1, "baja": 2}
+    relevant.sort(key=lambda x: (x.get("due") or "9999-12-31", prio_rank.get(x.get("priority", "media"), 1)))
+
+    lines = [header]
+    for i, t in enumerate(relevant, start=1):
+        pr_emoji = {"alta":"🔴","media":"🟡","baja":"🟢"}.get(t.get("priority","media"),"🟡")
+        due = t.get("due") or "—"
+        lines.append(f"{i}. ⏳ {pr_emoji} [{t.get('id')}] {t.get('title')} 〰️ vence: {due}")
+    lines.append("\n✅ Responde cuando completes cada tarea. ¡Gracias!")
+    return "\n".join(lines)
+
+def run_pending_tasks_reminders(send_if_empty: bool = True, today_only: bool = True) -> None:
+    """
+    Envía recordatorios:
+      - ADMIN: HOY + VENCIDAS de todas las tareas.
+      - SUPERVISORES: sus tareas pendientes; si today_only=True → solo hoy + vencidas, si False → todas.
+    """
+    # --- Admin ---
+    try:
+        admin_phone = get_admin_phone()
+    except Exception as e:
+        print(f"⚠️ No se pudo obtener el teléfono del admin: {e}")
+        admin_phone = None
+
+    admin_msg = _build_admin_message_for_today_and_overdue()
+    if admin_phone:
+        if "No tienes tareas pendientes para hoy." in admin_msg and not send_if_empty:
+            print("ℹ️ Admin sin pendientes; no se envía por configuración.")
+        else:
+            try:
+                send_whatsapp_message(admin_phone, admin_msg)
+                print(f"✅ Recordatorio ADMIN enviado a {admin_phone}")
+            except Exception as e:
+                print(f"❌ Error enviando recordatorio al admin: {e}")
+
+    # --- Supervisores ---
+    data = _read_all()
+    all_tasks = data.get("tasks", [])
+
+    # agrupar por teléfono del asignado
+    buckets: Dict[str, Dict[str, Any]] = {}
+    for t in all_tasks:
+        phone = (t.get("assignee_phone_raw") or t.get("assignee_phone") or "").strip()
+        if not phone or t.get("status") != "pendiente":
+            continue
+        if phone not in buckets:
+            buckets[phone] = {
+                "name": _pretty_display_name(t.get("assignee_name") or ""),
+                "tasks": []
+            }
+        buckets[phone]["tasks"].append(t)
+
+    if TASKS_DEBUG:
+        print(f"📦 Supervisores con pendientes: {len(buckets)}")
+
+    for phone, info in buckets.items():
+        sup_name = info["name"] or "Supervisor"
+        msg = _build_supervisor_message(sup_name, info["tasks"], today_only=today_only)
+        if not msg:
+            if TASKS_DEBUG:
+                print(f"ℹ️ {phone} ({sup_name}) sin tareas relevantes para enviar (today_only={today_only}).")
+            continue
+        try:
+            send_whatsapp_message(phone, msg)
+            print(f"✅ Recordatorio SUPERVISOR enviado a {phone} ({sup_name})")
+        except Exception as e:
+            print(f"❌ Error enviando recordatorio a supervisor {phone}: {e}")
+
+# =========================
+# RECORDATORIO DIARIO SOLO ADMIN (legacy)
 # =========================
 def _build_pending_today_message() -> str:
-    """Arma el mensaje con solo tareas pendientes de HOY."""
+    """Arma el mensaje con solo tareas pendientes de HOY para el admin (modo legacy)."""
     hoy = datetime.now().strftime("%Y-%m-%d")
     tasks = list_tasks({"time": "hoy", "status": "pendiente"})
     header = f"📅 *Tareas pendientes para HOY* ({hoy})"
@@ -706,13 +1050,13 @@ def _build_pending_today_message() -> str:
         title = t.get("title","").strip() or "(sin título)"
         tid = t.get("id","")
         due = t.get("due") or "—"
-        lines.append(f"{i}. ⏳ {pr_emoji} [{tid}] {title} 〰️ vence: {due}")
+        who = f" • 👤 {t.get('assignee_name')}" if t.get("assignee_name") else ""
+        lines.append(f"{i}. ⏳ {pr_emoji} [{tid}] {title} 〰️ vence: {due}{who}")
     return "\n".join(lines)
 
 def send_daily_pending_tasks_reminder(send_if_empty: bool = True) -> None:
     """
-    Envía por WhatsApp al ADMIN el resumen de tareas PENDIENTES de HOY.
-    - send_if_empty=True: envía también si no hay pendientes (con mensaje de 'No tienes tareas...')
+    (Legacy) Envía por WhatsApp al ADMIN el resumen de tareas PENDIENTES de HOY.
     """
     try:
         admin_phone = get_admin_phone()
@@ -736,5 +1080,91 @@ def send_daily_pending_tasks_reminder(send_if_empty: bool = True) -> None:
     except Exception as e:
         print(f"❌ Error enviando recordatorio de tareas al admin: {e}")
 
-# Alias por compatibilidad si el import se hizo en singular:
+# Alias por compatibilidad
 send_daily_pending_task_reminder = send_daily_pending_tasks_reminder
+
+# =========================
+# API PARA SUPERVISORES: vencidas y completadas
+# =========================
+def _to_date(s: Optional[str]):
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date() if s else None
+    except Exception:
+        return None
+
+def _is_task_assigned_to_phone(t: Dict[str, Any], phone: str) -> bool:
+    """Verifica si la tarea t está asignada al teléfono (normalizado E.164 CO)."""
+    if not phone:
+        return False
+    p = _normalize_phone(phone)
+    p_raw = _normalize_phone(t.get("assignee_phone_raw", ""))
+    p_norm = _normalize_phone(t.get("assignee_phone", ""))
+    return p and (p == p_raw or p == p_norm)
+
+def get_overdue_tasks_for_assignee(phone: str) -> List[Dict[str, Any]]:
+    """
+    Devuelve tareas PENDIENTES y VENCIDAS (due <= hoy) asignadas a phone.
+    """
+    data = _read_all()
+    all_tasks = data.get("tasks", [])
+    today = datetime.now().date()
+    out = []
+    for t in all_tasks:
+        if t.get("status") != "pendiente":
+            continue
+        if not _is_task_assigned_to_phone(t, phone):
+            continue
+        d = _to_date(t.get("due"))
+        if d and d <= today:
+            out.append(t)
+    # orden útil
+    prio_rank = {"alta": 0, "media": 1, "baja": 2}
+    out.sort(key=lambda x: (x.get("due") or "9999-12-31", prio_rank.get(x.get("priority", "media"), 1)))
+    return out
+
+def parse_task_ids_from_text(text: str) -> List[str]:
+    """
+    Extrae IDs desde texto. Soporta:
+      - IDs entre corchetes: [abcd1234], [T20250814123456789]
+      - IDs sueltos separados por coma/espacio
+    """
+    if not text:
+        return []
+    txt = (text or "").strip()
+    pat = r"(?:[0-9a-f]{8}|T\d{17,})"
+    ids = re.findall(r"\[(" + pat + r")\]", txt, flags=re.IGNORECASE)
+    if not ids:
+        ids = re.findall(pat, txt, flags=re.IGNORECASE)
+    # normalizar y deduplicar preservando orden
+    seen = set()
+    out = []
+    for i in ids:
+        i2 = i.strip()
+        if i2 not in seen:
+            seen.add(i2)
+            out.append(i2)
+    return out
+
+def complete_tasks_by_ids(ids: List[str], phone: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Marca como 'completada' las tareas con IDs dados.
+    Si phone está definido, solo completa tareas asignadas a ese phone.
+    Retorna la lista de tareas actualizadas.
+    """
+    if not ids:
+        return []
+    data = _read_all()
+    tasks = data.get("tasks", [])
+    idset = set(ids)
+    updated = []
+    for t in tasks:
+        if t.get("id") in idset and t.get("status") == "pendiente":
+            if phone and not _is_task_assigned_to_phone(t, phone):
+                continue
+            t["status"] = "completada"
+            t["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            updated.append(t)
+    if updated:
+        _write_all({"tasks": tasks})
+    return updated
+

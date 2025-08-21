@@ -1,0 +1,38 @@
+{
+  "573176380061": {
+    "last_inbound": "2025-08-20T15:42:42.453848",
+    "last_outbound": null,
+    "last_nudge_at": null,
+    "nudged_for_inbound": null
+  },
+  "573168515237": {
+    "last_inbound": "2025-08-20T21:02:03.215751",
+    "last_outbound": "2025-08-20T20:41:54.546398",
+    "last_nudge_at": "2025-08-20T20:41:54.546398",
+    "nudged_for_inbound": null
+  },
+  "573176421624": {
+    "last_inbound": "2025-08-20T14:38:48.553779",
+    "last_outbound": null,
+    "last_nudge_at": null,
+    "nudged_for_inbound": null
+  },
+  "573168308454": {
+    "last_inbound": "2025-08-20T14:43:09.912778",
+    "last_outbound": null,
+    "last_nudge_at": null,
+    "nudged_for_inbound": null
+  },
+  "573176405985": {
+    "last_inbound": "2025-08-20T14:52:45.333657",
+    "last_outbound": null,
+    "last_nudge_at": null,
+    "nudged_for_inbound": null
+  },
+  "573166296648": {
+    "last_inbound": "2025-08-19T21:20:30.138726",
+    "last_outbound": "2025-08-20T19:43:17.912030",
+    "last_nudge_at": "2025-08-20T19:43:17.912030",
+    "nudged_for_inbound": "2025-08-19T21:20:30.138726"
+  }
+}
