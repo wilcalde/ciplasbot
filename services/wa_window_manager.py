@@ -58,8 +58,8 @@ _DEFAULT_CFG = {
     "nudge_before_minutes": 120,     # enviar nudge 120 min antes de expirar
     "check_every_minutes": 60,       # intervalo (min) del job periódico
     "nudge_message": (
-        "⏰ *Seguimos aquí para ayudarte.* Tu ventana vence en {mins} min.\n"
-        "¿Deseas continuar? Responde *sí* o cuéntame qué necesitas 🙌"
+        "⏰ *Pronto se completan 24 horas del ultima interaccion con CiplasBot.* Pasadas 24 horas no pdre enviarte mensajes. Tu ventana de contexto vence en {mins} min.\n"
+        "Responde *sí* o *Ok* para manener activa la comunicacion 🙌"
     )
 }
 

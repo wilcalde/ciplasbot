@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Optional, List
 
+import pytz
 from services.whatsapp_service import send_whatsapp_message
 import services.session_memory as memory  # 🧠 Diccionario compartido
 
@@ -22,6 +23,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_DIR = os.path.normpath(os.path.join(BASE_DIR, "../config"))
 RESPONSES_DIR = os.path.join(CONFIG_DIR, "supervision_responses")
 USERS_FILE = os.path.join(CONFIG_DIR, "users.json")
+
+# 🌐 Zona horaria y ventana válida (solo para inicio manual)
+TZ = "America/Bogota"
+ALLOWED_DAYS = {0, 1, 2, 3, 4}   # Lunes–Viernes
+START_AT = (14, 30)              # 14:30
+
+def _now():
+    return datetime.now(pytz.timezone(TZ))
+
+def _today_str():
+    return _now().strftime("%Y-%m-%d")
+
+def _is_supervision_window():
+    n = _now()
+    return n.weekday() in ALLOWED_DAYS and (n.hour, n.minute) >= START_AT
 
 # 📝 Preguntas del formulario de supervisión (10 en total)
 QUESTIONS = [
@@ -65,7 +81,7 @@ def _same_person_phone(a: str, b: str) -> bool:
     return _last10(a) == _last10(b) and _last10(a) != ""
 
 def _session_filename_from_key(phone_key: str, when: Optional[datetime] = None) -> str:
-    when = when or datetime.now()
+    when = when or _now()
     return os.path.join(RESPONSES_DIR, f"{phone_key}_{when.strftime('%Y%m%d')}.json")
 
 def _candidate_phone_keys(phone: str) -> List[str]:
@@ -77,7 +93,7 @@ def _candidate_phone_keys(phone: str) -> List[str]:
     ]))
 
 def _find_session_path_by_variants(phone: str) -> Optional[str]:
-    today = datetime.now().strftime("%Y%m%d")
+    today = _now().strftime("%Y%m%d")
     variants = _candidate_phone_keys(phone)
     for key in variants:
         path = os.path.join(RESPONSES_DIR, f"{key}_{today}.json")
@@ -234,7 +250,7 @@ def _notify_admin_on_complete(session: dict) -> None:
 
     answered = len(session.get("answers", {}))
     total = len(session.get("flow", []))
-    completed_at = session.get("completed_at") or datetime.now().isoformat()
+    completed_at = session.get("completed_at") or _now().isoformat()
 
     # Adjunta el archivo de sesión (nombre), útil para el compilador
     ses_path = _find_session_path_by_variants(phone_key)
@@ -259,11 +275,22 @@ def _notify_admin_on_complete(session: dict) -> None:
 # ——————————————————————————————————————————————
 # API principal
 # ——————————————————————————————————————————————
-def ask_supervision_questions(phone: str, name: str):
+def ask_supervision_questions(phone: str, name: str, source: str = "manual") -> bool:
     """
     Inicia en memoria y en disco la sesión de supervisión,
     y envía la primera pregunta al supervisor.
+
+    Retorna True si inició; False si fue bloqueado (p. ej., fuera de horario).
     """
+    # Bloqueo de inicio manual fuera de ventana (Lu–Vi 14:30)
+    if source != "scheduler" and not _is_supervision_window():
+        send_whatsapp_message(
+            _canon_e164_co(phone),
+            "⏰ El *informe de supervisión* se habilita Lun–Vie a las 14:30. "
+            "Para iniciar en el horario correcto, escribe */start supervision*."
+        )
+        return False
+
     phone_key = _canon_e164_co(phone)  # 🔑 clave única y estable
 
     # Flujo base + posible pregunta de tareas vencidas
@@ -281,30 +308,35 @@ def ask_supervision_questions(phone: str, name: str):
         "process": "SUPERVISION",
         "phone": phone_key,
         "name": name,  # ⬅️ Guardamos nombre del supervisor
-        "created_at": datetime.now().isoformat()
+        "created_at": _now().isoformat()
     }
 
     if tq:
         session_data["tasks_question_index"] = tasks_q_index
         session_data["tasks_completion_candidates"] = tq["ids"]
 
-    # Guardar en memoria y disco
-    memory.sessions[phone_key] = session_data
+    # Guardar en memoria (namespaced) y disco
+    mem = memory.sessions.setdefault(phone_key, {})
+    mem["supervision"] = session_data
+    mem["active_flow"] = "SUPERVISION"
     _write_session_to_disk(phone_key, session_data)
 
     # Primera pregunta
     send_whatsapp_message(
-        phone,
+        phone_key,
         (
             f"📝 Hola *{name}*, vamos a diligenciar el informe de rutina de supervisión del día.\n\n"
             f"{flow[0]}"
         )
     )
-    print(f"🚀 Sesión iniciada para {phone_key} (tareas vencidas incluidas: {'sí' if tq else 'no'})")
+    print(f"🚀 Sesión iniciada para {phone_key} (source={source}; tareas vencidas: {'sí' if tq else 'no'})")
+    return True
+
 
 def send_supervision_questions():
     """
     Envía la invitación al cuestionario a todos los usuarios con rol 'supervisor'.
+    (Usado por el scheduler) -> source='scheduler'
     """
     if not os.path.exists(USERS_FILE):
         print(f"❌ Archivo users.json no encontrado en: {USERS_FILE}")
@@ -318,169 +350,169 @@ def send_supervision_questions():
             phone = user.get("phone")
             name = user.get("name")
             if phone and name:
-                ask_supervision_questions(phone, name)
+                ask_supervision_questions(phone, name, source="scheduler")
+
 
 def load_supervision_session_if_exists(phone: str) -> bool:
     """
-    Si existe un archivo de sesión para hoy, lo carga en memoria y devuelve True.
-    En caso contrario, False.
+    Si existe un archivo de sesión para hoy, lo carga en memoria (namespaced) y devuelve True.
+    En caso contrario, False. Si la sesión está completa, no activa el flujo.
     """
     phone_key = _canon_e164_co(phone)
     ses = _load_session_from_disk(phone)
-    if ses is not None:
-        # Saneado + reconstrucción si hace falta
-        ses = _ensure_valid_flow(ses, phone_key)
+    if ses is None:
+        return False
 
-        # Asegurar que tenga nombre/proceso en sesión (útil para la notificación final)
-        if not ses.get("name"):
-            info = _lookup_user_by_phone(phone_key)
-            if info and info.get("name"):
-                ses["name"] = info["name"]
-        if not ses.get("process"):
-            info = _lookup_user_by_phone(phone_key)
-            if info and info.get("process"):
-                ses["process"] = info["process"]
+    # Validar fecha de hoy y que no esté completa
+    created = (ses.get("created_at") or "")[:10]
+    if created and created != _today_str():
+        print("ℹ️ Sesión de supervisión encontrada no corresponde a HOY; se ignora.")
+        return False
 
-        memory.sessions[phone_key] = ses  # siempre en memoria por clave canónica
-        print(f"📦 Sesión activa en memoria para {phone_key} con step_index={ses['step_index']}")
-        return True
-    return False
+    ses = _ensure_valid_flow(ses, phone_key)
+    flow = ses.get("flow", [])
+    step_index = ses.get("step_index", 0)
+    if flow and step_index >= len(flow):
+        print("ℹ️ Sesión de supervisión ya completada; no se reactivará.")
+        return False
 
-def handle_response(phone: str, message: str):
+    # Asegurar nombre/proceso
+    if not ses.get("name"):
+        info = _lookup_user_by_phone(phone_key)
+        if info and info.get("name"):
+            ses["name"] = info["name"]
+    if not ses.get("process"):
+        info = _lookup_user_by_phone(phone_key)
+        if info and info.get("process"):
+            ses["process"] = info["process"]
+
+    mem = memory.sessions.setdefault(phone_key, {})
+    mem["supervision"] = ses
+    # No marcamos active_flow aquí; lo hará el router cuando corresponda
+    print(f"📦 Sesión activa en memoria para {phone_key} con step_index={ses['step_index']}")
+    return True
+
+
+def handle_response(phone: str, message: str) -> bool:
     """
     Procesa cada respuesta del supervisor, avanza en el flujo
     y guarda progreso en disco y memoria. Al finalizar, notifica al admin.
+
+    Retorna True si procesó el mensaje; False si lo ignoró (para que otro flujo lo maneje).
     """
     text = (message or "").strip()
     phone_key = _canon_e164_co(phone)
 
-    # 🔁 Reinicio global con /start (en cualquier paso)
-    if text.lower().startswith("/start"):
-        # Intentar recuperar nombre desde users.json
+    # ✅ Procesar SOLO si el flujo activo es SUPERVISION
+    if memory.sessions.get(phone_key, {}).get("active_flow") != "SUPERVISION":
+        return False
+
+    # 🔁 Reinicio explícito (opcional) con /start supervision
+    if text.lower().startswith("/start supervision"):
         info = _lookup_user_by_phone(phone_key) or {}
-        session = {
-            "flow": QUESTIONS[:],
-            "step_index": 0,
-            "answers": {},
-            "process": "SUPERVISION",
-            "phone": phone_key,
-            "name": info.get("name") or "",  # ⬅️ mantener nombre si podemos
-            "created_at": datetime.now().isoformat()
-        }
-        # Si hay tareas vencidas, añadir pregunta dinámica
-        tq = _build_tasks_question(phone_key)
-        if tq:
-            session["flow"].append(tq["text"])
-            session["tasks_question_index"] = len(session["flow"]) - 1
-            session["tasks_completion_candidates"] = tq["ids"]
+        return ask_supervision_questions(phone_key, info.get("name") or "", source="manual")
 
-        memory.sessions[phone_key] = session
-        _write_session_to_disk(phone_key, session)
-        send_whatsapp_message(phone, session["flow"][0])
-        print(f"🔄 Reinicio manual de sesión para {phone_key}")
-        return
-
-    # 1) Si no está en memoria, intenta cargar desde disco (robusto a formatos)
-    if phone_key not in memory.sessions:
-        if not load_supervision_session_if_exists(phone):
+    # 1) Si no está en memoria, intenta cargar desde disco
+    mem = memory.sessions.setdefault(phone_key, {})
+    if "supervision" not in mem or not mem["supervision"]:
+        if not load_supervision_session_if_exists(phone_key):
+            # No hay sesión activa válida
             send_whatsapp_message(
-                phone,
-                "⚠️ No encuentro una sesión activa. Escribe */start* para iniciar el informe de supervisión."
+                phone_key,
+                "⚠️ No encuentro una sesión activa de *Supervisión*. Escribe */start supervision* en el horario permitido."
             )
-            print(f"ℹ️ No había sesión en memoria ni en disco para {phone_key}.")
-            return
+            return True  # ya respondimos
 
     # 2) Sesión en memoria + garantizar flujo válido
-    session = memory.sessions.get(phone_key, {})
+    session = mem.get("supervision", {}) or {}
     session = _ensure_valid_flow(session, phone_key)  # 🔒 asegura 10+ preguntas válidas
     flow = session["flow"]
     idx = session.get("step_index", 0)
+    total = len(flow)
 
     # 3) Mensajes tipo saludo al inicio de idx=0 → repetir la primera pregunta
     first_like = {"/start", "start", "ok", "listo", "hola", "buenas", "buen día", "buen dia", "buenos días", "buenos dias"}
     if idx == 0 and text.lower() in first_like:
-        send_whatsapp_message(phone, flow[0])
+        send_whatsapp_message(phone_key, flow[0])
         print(f"🔁 Repetida primera pregunta a {phone_key} (mensaje inicial no se guardó como respuesta).")
-        return
+        return True
 
-    total = len(flow)
-
-    # 4) Si aún quedan preguntas por responder
-    if 0 <= idx < total:
-        current_q = flow[idx]
-
-        # ⛔ Idempotencia: si ya guardamos exactamente este texto para current_q, no avances
-        prev = session.get("answers", {}).get(current_q)
-        if prev is not None and prev.strip() == text:
-            print(f"⏭️ Duplicado detectado para {phone_key} en Q{idx+1}; no se avanza.")
-            return
-
-        session["answers"][current_q] = text
-        session["step_index"] = idx + 1
-
-        # Persistir
-        memory.sessions[phone_key] = session
-        _write_session_to_disk(phone_key, session)
-
-        # 🔔 Si esta pregunta fue la de tareas vencidas → procesar completadas
-        tasks_q_idx = session.get("tasks_question_index", None)
-        if tasks_q_idx is not None and idx == tasks_q_idx:
-            allowed = set(session.get("tasks_completion_candidates", []) or [])
-            answer = text.strip().lower()
-
-            if answer not in {"ninguna", "ninguno", "no", "nada"}:
-                ids = parse_task_ids_from_text(text)
-                # filtrar a los que estaban en la lista
-                ids = [i for i in ids if i in allowed]
-                if ids:
-                    updated = complete_tasks_by_ids(ids, phone=phone_key)
-                    if updated:
-                        listado = ", ".join(f"[{t.get('id')}] {t.get('title')}" for t in updated)
-                        send_whatsapp_message(
-                            phone,
-                            f"✅ *Tareas marcadas como completadas*: {listado}"
-                        )
-                    else:
-                        send_whatsapp_message(
-                            phone,
-                            "ℹ️ No pude marcar tareas con los IDs indicados (verifica que correspondan a tus tareas)."
-                        )
-                else:
-                    send_whatsapp_message(
-                        phone,
-                        "ℹ️ No detecté IDs válidos de la lista. Si deseas, puedes responder con los IDs entre corchetes (por ejemplo: [abc12345], [def67890])."
-                    )
-
-        # Siguiente pregunta o finalización
-        if session["step_index"] < total:
-            next_q = flow[session["step_index"]]
-            send_whatsapp_message(phone, next_q)
-            print(f"➡️ Enviada pregunta {session['step_index']+1}/{total} a {phone_key}")
-        else:
-            # Marcar cierre y persistir
-            session["completed_at"] = datetime.now().isoformat()
-            memory.sessions[phone_key] = session
-            _write_session_to_disk(phone_key, session)
-
-            # Notificar al supervisor y al administrador
-            send_whatsapp_message(
-                phone,
-                "✅ ¡Gracias! El informe fue registrado correctamente. 📨"
-            )
-            print(f"🏁 Cuestionario completado por {phone_key}")
-
-            _notify_admin_on_complete(session)
-
-            # Limpiar memoria (el archivo queda en disco para el compilador)
-            if phone_key in memory.sessions:
-                del memory.sessions[phone_key]
-        return
-
-    # 5) Si idx >= total (usuario escribe algo tras terminar)
+    # 4) Si ya terminó y escribe algo → mensaje de cierre
     if idx >= total:
         send_whatsapp_message(
-            phone,
-            "✅ Ya completaste todas las preguntas. Si deseas empezar de nuevo, escribe */start*."
+            phone_key,
+            "✅ Ya completaste todas las preguntas. Si deseas empezar de nuevo, escribe */start supervision*."
         )
         print(f"ℹ️ Usuario {phone_key} escribió tras completar el cuestionario.")
-        return
+        return True
+
+    # 5) Guardar respuesta y avanzar
+    current_q = flow[idx]
+    prev = session.get("answers", {}).get(current_q)
+    if prev is not None and prev.strip() == text:
+        print(f"⏭️ Duplicado detectado para {phone_key} en Q{idx+1}; no se avanza.")
+        return True
+
+    session.setdefault("answers", {})[current_q] = text
+    session["step_index"] = idx + 1
+
+    # Persistir
+    mem["supervision"] = session
+    memory.sessions[phone_key] = mem
+    _write_session_to_disk(phone_key, session)
+
+    # 🔔 Si esta pregunta fue la de tareas vencidas → procesar completadas
+    tasks_q_idx = session.get("tasks_question_index", None)
+    if tasks_q_idx is not None and idx == tasks_q_idx:
+        allowed = set(session.get("tasks_completion_candidates", []) or [])
+        answer = text.strip().lower()
+
+        if answer not in {"ninguna", "ninguno", "no", "nada"}:
+            ids = parse_task_ids_from_text(text)
+            # filtrar a los que estaban en la lista
+            ids = [i for i in ids if i in allowed]
+            if ids:
+                updated = complete_tasks_by_ids(ids, phone=phone_key)
+                if updated:
+                    listado = ", ".join(f"[{t.get('id')}] {t.get('title')}" for t in updated)
+                    send_whatsapp_message(
+                        phone_key,
+                        f"✅ *Tareas marcadas como completadas*: {listado}"
+                    )
+                else:
+                    send_whatsapp_message(
+                        phone_key,
+                        "ℹ️ No pude marcar tareas con los IDs indicados (verifica que correspondan a tus tareas)."
+                    )
+            else:
+                send_whatsapp_message(
+                    phone_key,
+                    "ℹ️ No detecté IDs válidos de la lista. Si deseas, puedes responder con los IDs entre corchetes (por ejemplo: [abc12345], [def67890])."
+                )
+
+    # 6) Siguiente pregunta o finalización
+    if session["step_index"] < total:
+        next_q = flow[session["step_index"]]
+        send_whatsapp_message(phone_key, next_q)
+        print(f"➡️ Enviada pregunta {session['step_index']+1}/{total} a {phone_key}")
+        return True
+
+    # 🏁 Finaliza
+    session["completed_at"] = _now().isoformat()
+    mem["supervision"] = session
+    memory.sessions[phone_key] = mem
+    _write_session_to_disk(phone_key, session)
+
+    send_whatsapp_message(
+        phone_key,
+        "✅ ¡Gracias! El informe fue registrado correctamente. 📨"
+    )
+    print(f"🏁 Cuestionario completado por {phone_key}")
+
+    _notify_admin_on_complete(session)
+
+    # Limpiar memoria: cerrar flujo activo y dejar el archivo en disco
+    mem["supervision"] = None
+    mem["active_flow"] = None
+    memory.sessions[phone_key] = mem
+    return True

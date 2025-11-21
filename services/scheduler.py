@@ -70,9 +70,9 @@ def start_scheduler():
     rem_hour, rem_min = _env_time(
         "PENDING_TASKS_REMINDER_HOUR",
         "PENDING_TASKS_REMINDER_MINUTE",
-        6, 45
+        6, 20
     )
-    rem_dow = os.getenv("PENDING_TASKS_REMINDER_DOW", "0-4")
+    rem_dow = os.getenv("PENDING_TASKS_REMINDER_DOW", "0-5")
 
     scheduler.add_job(
         run_pending_tasks_reminders,

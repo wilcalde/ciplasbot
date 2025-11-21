@@ -9,16 +9,19 @@ from services.whatsapp_service import send_whatsapp_message
 from services.session_memory import CONFIG_DIR, SUPERVISORS_FILE, ALERT_LOG_FILE
 from services.prompts import get_flow, get_prompt
 
-
 # =========================
 # Utilidades de normalización / IO
 # =========================
+
+TZ = "America/Bogota"  # si manejas tz externamente, ajusta según tu stack
 
 def normalize(text: str) -> str:
     """
     🔤 Convierte texto a minúsculas sin acentos para comparaciones (roles, etc.)
     """
-    return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode().lower()
+    if text is None:
+        return ""
+    return unicodedata.normalize("NFKD", str(text)).encode("ASCII", "ignore").decode().lower()
 
 def normalize_key(label: str) -> str:
     """
@@ -37,11 +40,29 @@ def normalize_key(label: str) -> str:
              .replace(" ", "_")
     )
 
+def _digits_only(s: str) -> str:
+    return "".join(ch for ch in str(s) if ch.isdigit())
+
+def _last10(d: str) -> str:
+    d = _digits_only(d)
+    return d[-10:] if len(d) >= 10 else d
+
+def canon_phone_e164_co(phone: str) -> str:
+    """
+    Canoniza a '57' + últimos 10 dígitos (mismo criterio usado en main/supervisión).
+    """
+    d = _digits_only(phone)
+    if d.startswith("57") and len(d) == 12:
+        return d
+    tail = _last10(d)
+    return "57" + tail if tail else d
+
 def get_session_path(phone: str) -> str:
     """
-    📁 Construye la ruta del archivo de sesión por número de teléfono.
+    📁 Construye la ruta del archivo de sesión por número de teléfono (E.164 CO).
     """
-    return os.path.join(CONFIG_DIR, f"{phone}_session.json")
+    phone_key = canon_phone_e164_co(phone)
+    return os.path.join(CONFIG_DIR, f"{phone_key}_session.json")
 
 def load_json(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -52,6 +73,9 @@ def save_json(path: str, data: Dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def _today_str() -> str:
+    return date.today().strftime("%Y-%m-%d")
+
 
 # =========================
 # Flujo: envío inicial
@@ -59,7 +83,7 @@ def save_json(path: str, data: Dict) -> None:
 
 def send_daily_report_request():
     """
-    🚦 Envía el mensaje inicial para cada supervisor y crea la sesión JSON.
+    🚦 Envía el mensaje inicial para cada supervisor y crea la sesión JSON de *NOVEDADES*.
     """
     try:
         with open(SUPERVISORS_FILE, encoding="utf-8") as f:
@@ -70,9 +94,9 @@ def send_daily_report_request():
 
     for user in users:
         if normalize(user.get("role", "")) == "supervisor":
-            name = user["name"]
-            phone = user["phone"]
-            process = user["process"].upper()
+            name = user.get("name")
+            phone = canon_phone_e164_co(user.get("phone", ""))
+            process = (user.get("process") or "").upper()
 
             flow = get_flow(process)
             if not flow:
@@ -93,16 +117,18 @@ def send_daily_report_request():
                 print(f"✅ Mensaje inicial enviado a {name} ({phone})")
             except Exception as e:
                 print(f"❌ Error enviando mensaje a {phone}: {e}")
-                continue
+                # si falla el envío igual intentamos crear el archivo para trazabilidad
 
-            # Crear sesión
+            # Crear sesión del día
             session = {
+                "kind": "NOVEDADES",
                 "process": process,
                 "supervisor": name,
                 "flow": flow,          # Lista de etiquetas legibles (p. ej. "General notes")
                 "step_index": 0,       # Índice del tema actual a responder
                 "answers": {},         # Respuestas por tema normalizado (UPPER_SNAKE)
-                "fecha_hora": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
             }
             session_file = get_session_path(phone)
             print("🏷️ Creando sesión en:", session_file)
@@ -111,6 +137,46 @@ def send_daily_report_request():
                 print(f"✅ Sesión creada: {session_file}")
             except Exception as e:
                 print(f"❌ Error creando sesión para {phone}: {e}")
+
+
+# =========================
+# Helpers de sesión NOVEDADES
+# =========================
+
+def restart_today_session(phone: str) -> Optional[str]:
+    """
+    Reinicia la sesión de *NOVEDADES* del día para `phone` y retorna el prompt de la primera pregunta.
+    Si no hay sesión del día, retorna None.
+    """
+    path = get_session_path(phone)
+    if not os.path.exists(path):
+        return None
+
+    try:
+        ses = load_json(path)
+    except Exception as e:
+        print(f"❌ Error leyendo sesión (restart): {e}")
+        return None
+
+    # Si no es de hoy, no reiniciamos
+    created = (ses.get("created_at") or "")[:10]
+    if created and created != _today_str():
+        return None
+
+    ses["answers"] = {}
+    ses["step_index"] = 0
+    ses["updated_at"] = datetime.now().isoformat()
+    try:
+        save_json(path, ses)
+    except Exception as e:
+        print(f"❌ Error guardando sesión (restart): {e}")
+        return None
+
+    try:
+        first_prompt = get_prompt(ses["flow"][0], ses["process"])
+    except Exception:
+        first_prompt = f"Por favor, compárteme la información de: *{ses['flow'][0]}*"
+    return first_prompt
 
 
 # =========================
@@ -163,7 +229,8 @@ def handle_supervisor_reply(phone: str, user_reply: str) -> Dict:
 
     Retorna un dict con estado y metadatos útiles.
     """
-    session_path = get_session_path(phone)
+    phone_key = canon_phone_e164_co(phone)
+    session_path = get_session_path(phone_key)
     if not os.path.exists(session_path):
         return {"status": "ERROR", "message": "No existe una sesión activa para este número."}
 
@@ -172,6 +239,11 @@ def handle_supervisor_reply(phone: str, user_reply: str) -> Dict:
     except Exception as e:
         return {"status": "ERROR", "message": f"Error leyendo la sesión: {e}"}
 
+    # Ignorar sesiones que no sean del día
+    created = (session.get("created_at") or "")[:10]
+    if created and created != _today_str():
+        return {"status": "ERROR", "message": "La sesión no corresponde al día de hoy."}
+
     process = session.get("process", "")
     flow = session.get("flow", [])
     step_index = session.get("step_index", 0)
@@ -179,7 +251,7 @@ def handle_supervisor_reply(phone: str, user_reply: str) -> Dict:
     # 1) Guardar respuesta del paso actual (clave normalizada) ANTES de avanzar
     session, saved_key = _save_current_answer(session, user_reply)
 
-    # 2) Persistir inmediatamente
+    # 2) Persistir inmediatamente (idempotente)
     try:
         save_json(session_path, session)
     except Exception as e:
@@ -199,7 +271,7 @@ def handle_supervisor_reply(phone: str, user_reply: str) -> Dict:
         except Exception as e:
             return {"status": "ERROR", "message": f"Error actualizando la sesión: {e}"}
 
-        _send_next_question(phone, process, next_label)
+        _send_next_question(phone_key, process, next_label)
         return {
             "status": "CONTINUE",
             "saved_key": saved_key,
@@ -218,9 +290,9 @@ def handle_supervisor_reply(phone: str, user_reply: str) -> Dict:
 
     # Opcional: mensaje de cierre al supervisor
     try:
-        send_whatsapp_message(phone, "✅ Gracias. Tu informe diario ha sido registrado completo.")
+        send_whatsapp_message(phone_key, "✅ Gracias. Tu informe diario ha sido registrado completo.")
     except Exception as e:
-        print(f"❌ Error enviando mensaje de cierre a {phone}: {e}")
+        print(f"❌ Error enviando mensaje de cierre a {phone_key}: {e}")
 
     return {
         "status": "DONE",
@@ -244,11 +316,12 @@ def update_alert_status(phone: str, key: str) -> bool:
             data = {}
         if today not in data:
             data[today] = {}
-        if phone not in data[today]:
-            data[today][phone] = {}
-        if data[today][phone].get(key, False):
+        phone_key = canon_phone_e164_co(phone)
+        if phone_key not in data[today]:
+            data[today][phone_key] = {}
+        if data[today][phone_key].get(key, False):
             return False
-        data[today][phone][key] = True
+        data[today][phone_key][key] = True
         with open(ALERT_LOG_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         return True
@@ -259,9 +332,10 @@ def update_alert_status(phone: str, key: str) -> bool:
 def check_alert_already_sent(phone: str, key: str) -> bool:
     today = str(date.today())
     try:
+        phone_key = canon_phone_e164_co(phone)
         with open(ALERT_LOG_FILE, encoding="utf-8") as f:
             data = json.load(f)
-        return data.get(today, {}).get(phone, {}).get(key, False)
+        return data.get(today, {}).get(phone_key, {}).get(key, False)
     except:
         return False
 
@@ -274,7 +348,7 @@ def get_admin_phone() -> Optional[str]:
             users = json.load(f)["users"]
         for u in users:
             if normalize(u.get("role", "")) == "administrador":
-                return u.get("phone")
+                return canon_phone_e164_co(u.get("phone", ""))
         return None
     except Exception as e:
         print(f"❌ Error buscando administrador: {e}")
@@ -310,7 +384,7 @@ def check_incomplete_reports_and_notify():
         phone = file.split("_")[0]
         session_path = os.path.join(CONFIG_DIR, file)
 
-        # Filtrar sesiones del día actual
+        # Filtrar sesiones del día actual (por ctime)
         try:
             fecha_creacion = date.fromtimestamp(os.path.getctime(session_path))
         except Exception:
@@ -329,7 +403,7 @@ def check_incomplete_reports_and_notify():
         total = len(flow)
         respondidas = len(answers)
 
-        supervisor = next((u for u in users if u.get("phone") == phone), None)
+        supervisor = next((u for u in users if canon_phone_e164_co(u.get("phone","")) == phone), None)
         name = supervisor["name"] if supervisor else phone
 
         # Completado
