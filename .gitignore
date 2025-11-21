@@ -1,4 +1,64 @@
+# -------------------------
+# ARCHIVOS SENSIBLES
+# -------------------------
+
 .env
+config/waba.json
+config/users.json
+config/operators.json
+config/operators_impr_graf.json
+
+# Logs y registros confidenciales
+config/*.jsonl
+config/supervision_responses/
+
+# -------------------------
+# PYTHON
+# -------------------------
+
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.pdb
+*.pkl
+*.egg-info/
+*.egg
+.eggs/
+
+# Entornos virtuales
 venv/
+ENV/
+env/
+
+# Archivos temporales
+*.log
+*.tmp
+*.swp
+
+# -------------------------
+# CACHE DE EDITORES
+# -------------------------
+
+# VS Code
+.vscode/
+
+# PyCharm / JetBrains
+.idea/
+
+# -------------------------
+# WHATSAPP Y ESTADO DEL BOT
+# -------------------------
+
+# Estados internos que cambian constantemente
+wa_window_manager.json
+session_*/ 
+session.json
+
+# -------------------------
+# OTROS
+# -------------------------
+
+# Archivos de compilación
+build/
+dist/
