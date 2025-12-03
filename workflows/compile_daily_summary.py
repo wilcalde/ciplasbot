@@ -201,9 +201,10 @@ def ensure_signature(html: str) -> str:
 def build_email_1_body(reports: List[Dict]) -> str:
     system_prompt = (
         "Eres un asistente que genera un email en HTML para el equipo de producción. "
-        "Debes detallar los reportes de cada supervisor, agrupados por proceso. "
-        "Para cada proceso, incluye: supervisor, hora de registro, y listas con las novedades: personal ausente, operando, inventario, RESUMEN_PARO, paradas, y notas generales. "
-        "Utiliza etiquetas HTML (<h3>, <h4>, <ul>, <li>, <p>) y emojis para cada sección. "
+        "Debes detallar los reportes COMPLETOS de cada supervisor, agrupados por proceso, sin abreviar texto ni usar '...' para recortar información. "
+        "Para cada proceso, incluye en orden: supervisor, hora de registro y listas con las novedades: personal ausente, operando, inventario, RESUMEN_PARO, paradas y notas generales. "
+        "Organiza cada sección con viñetas (<ul>, <li>) y emojis, manteniendo cada proceso en su propio bloque con encabezados (<h3>, <h4>, <p>). "
+        "Utiliza emojis para cada sección y respeta la secuencia de procesos, sin omitir detalles ni condensar frases. "
         "Al final, agrega un pie de página con agradecimiento y la firma 'Agente IA CiplasBot 🤖'."
     )
     user_prompt = (
