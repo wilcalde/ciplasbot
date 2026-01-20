@@ -1,6 +1,7 @@
 # workflows/fileteado_leno.py
 import os
 import re
+import sqlite3
 from io import BytesIO
 from datetime import datetime, date
 
@@ -22,6 +23,7 @@ from services.session_memory import CONFIG_DIR
 # ────────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "operarios_leno_tubular.db")
 
 COLS = {
     "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
@@ -87,10 +89,19 @@ def _fmt_pct(v) -> str:
     except Exception:
         return "N/D"
 
+def _fmt_pp(v) -> str:
+    try:
+        return f"{float(v):+.1f} pp"
+    except Exception:
+        return "N/D"
+
 def _sanitize_pdf_text(s: str) -> str:
     if not s:
         return ""
-    repl = {"•": "-", "–": "-", "—": "-", "―": "-", "“": '"', "”": '"', "‘": "'", "’": "'", "\u00A0": " "}
+    repl = {
+        "•": "-", "–": "-", "—": "-", "―": "-", "“": '"', "”": '"', "‘": "'", "’": "'", "\u00A0": " ",
+        "✅": "OK", "📈": "UP", "🔻": "DOWN", "⚪": "NO DATA",
+    }
     for k, v in repl.items():
         s = s.replace(k, v)
     return s.encode("latin-1", "ignore").decode("latin-1")
@@ -103,6 +114,76 @@ def _truncate_to_width(pdf: FPDF, text: str, max_w: float) -> str:
     while s and pdf.get_string_width(s + ell) > max_w:
         s = s[:-1]
     return (s + ell) if s else ell
+
+def _connect_sqlite(db_path: str) -> sqlite3.Connection:
+    return sqlite3.connect(db_path)
+
+def _quote_identifier(name: str) -> str:
+    return f"\"{name.replace('\"', '\"\"')}\""
+
+def _inspect_sqlite_tables(conn: sqlite3.Connection) -> list[str]:
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    return [r[0] for r in cur.fetchall()]
+
+def _get_table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    cur = conn.execute(f"PRAGMA table_info({_quote_identifier(table)});")
+    return [r[1] for r in cur.fetchall()]
+
+def _detect_efficiency_table(conn: sqlite3.Connection) -> tuple[str, str, str, str] | None:
+    operario_candidates = ["operario", "nombre", "nombre_operario", "apellidos_nombres", "operador", "empleado"]
+    fecha_candidates = ["fecha", "fecha_registro", "fecha_efectiva", "date", "mes", "periodo"]
+    eficiencia_candidates = ["eficiencia", "eficiencia_operario", "efficiency", "rendimiento", "productividad"]
+    best = None
+    best_score = -1
+    for table in _inspect_sqlite_tables(conn):
+        cols = _get_table_columns(conn, table)
+        if not cols:
+            continue
+        norm_map = {_normalize(c): c for c in cols}
+        c_operario = next((norm_map.get(_normalize(c)) for c in operario_candidates if _normalize(c) in norm_map), None)
+        c_fecha = next((norm_map.get(_normalize(c)) for c in fecha_candidates if _normalize(c) in norm_map), None)
+        c_eff = next((norm_map.get(_normalize(c)) for c in eficiencia_candidates if _normalize(c) in norm_map), None)
+        score = sum([c_operario is not None, c_fecha is not None, c_eff is not None])
+        if score > best_score and score == 3:
+            best = (table, c_operario, c_fecha, c_eff)
+            best_score = score
+    return best
+
+def _month_window(end: date, months: int = 5) -> list[pd.Period]:
+    end_period = pd.Period(end, freq="M")
+    start_period = end_period - (months - 1)
+    return list(pd.period_range(start=start_period, end=end_period, freq="M"))
+
+def _load_efficiency_window(end: date, db_path: str = OPERARIOS_DB_PATH) -> tuple[pd.DataFrame, list[pd.Period]]:
+    months = _month_window(end, months=5)
+    if not os.path.exists(db_path):
+        return pd.DataFrame(columns=["Operario", "Month", "Eficiencia"]), months
+    conn = _connect_sqlite(db_path)
+    try:
+        detected = _detect_efficiency_table(conn)
+        if not detected:
+            return pd.DataFrame(columns=["Operario", "Month", "Eficiencia"]), months
+        table, c_operario, c_fecha, c_eff = detected
+        cols_sql = ", ".join([_quote_identifier(c_operario), _quote_identifier(c_fecha), _quote_identifier(c_eff)])
+        df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(table)}", conn)
+    finally:
+        conn.close()
+    df = df.rename(columns={c_operario: "Operario", c_fecha: "Fecha", c_eff: "Eficiencia"})
+    df["Operario"] = df["Operario"].astype(str).str.strip()
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    df = df.dropna(subset=["Fecha"])
+    df["Eficiencia"] = pd.to_numeric(df["Eficiencia"], errors="coerce")
+    df = df.dropna(subset=["Eficiencia"])
+    if not df.empty:
+        max_eff = df["Eficiencia"].max()
+        if max_eff > 1.5:
+            df["Eficiencia"] = df["Eficiencia"] / 100.0
+    df["Month"] = df["Fecha"].dt.to_period("M")
+    df = df[df["Month"].isin(months)]
+    if df.empty:
+        return pd.DataFrame(columns=["Operario", "Month", "Eficiencia"]), months
+    df = df.groupby(["Operario", "Month"], as_index=False)["Eficiencia"].mean()
+    return df, months
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Subset LENO (en orden)
@@ -319,6 +400,31 @@ def _plot_turno_bars_and_puestos_leno(df_turno: pd.DataFrame) -> tuple[str | Non
     plt.tight_layout(); plt.savefig(out_path, bbox_inches="tight"); plt.close(fig)
     return out_path, aspect
 
+def _plot_efficiency_delta_bars(df: pd.DataFrame, title: str, fname_prefix: str) -> tuple[str | None, float]:
+    if df is None or df.empty:
+        return None, 0.0
+    labels = df["Operario"].astype(str).tolist()
+    deltas = df["Delta_pp"].astype(float).tolist()
+    fig_w, fig_h = 6.4, max(2.2, 0.35 * max(1, len(labels)) + 1.0)
+    aspect = fig_h / fig_w
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
+    y = np.arange(len(labels))
+    cmap = plt.cm.Blues
+    norm = plt.Normalize(min(deltas), max(deltas)) if len(deltas) > 1 else None
+    colors = [cmap(norm(v)) if norm else cmap(0.6) for v in deltas]
+    ax.barh(y, deltas, color=colors)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Cambio 5 meses (pp)")
+    ax.set_title(title)
+    ax.axvline(0, color="#555", linewidth=0.8)
+    ax.grid(axis="x", linestyle="--", alpha=0.4)
+    fname = f"{fname_prefix}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}.png"
+    out_path = os.path.join(REPORTS_DIR, fname)
+    plt.tight_layout(); plt.savefig(out_path, bbox_inches="tight"); plt.close(fig)
+    return out_path, aspect
+
 # ────────────────────────────────────────────────────────────────────────────────
 # Render de tablas
 # ────────────────────────────────────────────────────────────────────────────────
@@ -418,6 +524,169 @@ def _render_table_operario_total_leno(pdf: FPDF, df: pd.DataFrame, x: float, y: 
     used_h = pdf.get_y() - start_y + 6 + 7
     return used_h
 
+def _build_efficiency_summary(df_eff: pd.DataFrame, months: list[pd.Period]) -> pd.DataFrame:
+    if df_eff is None or df_eff.empty:
+        return pd.DataFrame(columns=["Operario", "Prom_5m", "Delta", "Meses_con_dato", "Final"])
+    pivot = df_eff.pivot_table(index="Operario", columns="Month", values="Eficiencia", aggfunc="mean")
+    pivot = pivot.reindex(columns=months)
+    meses_con_dato = pivot.count(axis=1)
+    prom_5m = pivot.mean(axis=1, skipna=True)
+    def _first_last(row):
+        vals = row.dropna()
+        if vals.empty:
+            return np.nan, np.nan
+        return vals.iloc[0], vals.iloc[-1]
+    first_last = pivot.apply(_first_last, axis=1, result_type="expand")
+    first_vals = first_last[0]
+    last_vals = first_last[1]
+    delta = last_vals - first_vals
+    summary = pivot.copy()
+    summary["Prom_5m"] = prom_5m
+    summary["Delta"] = delta
+    summary["Meses_con_dato"] = meses_con_dato
+    summary["Final"] = last_vals
+    summary = summary.reset_index()
+    return summary
+
+def _assign_trend_state(row: pd.Series) -> str:
+    meses = int(row.get("Meses_con_dato", 0) or 0)
+    prom = row.get("Prom_5m")
+    final = row.get("Final")
+    delta = row.get("Delta")
+    if meses < 3:
+        return "⚪ Sin datos"
+    if pd.notna(prom) and pd.notna(final) and prom >= 0.80 and final >= 0.80:
+        return "✅ Cumple"
+    if pd.notna(delta) and delta >= 0.02:
+        return "📈 Mejorando"
+    return "🔻 Bajando"
+
+def _render_efficiency_trend_table(pdf: FPDF, df: pd.DataFrame, months: list[pd.Period], x: float, y: float,
+                                   w: float, max_rows: int = 28) -> float:
+    month_labels = [m.strftime("%b-%Y") for m in months]
+    def _draw_header(title: str):
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(w, 7, _sanitize_pdf_text(title), ln=1)
+        pdf.set_font("Helvetica", "B", 8)
+        headers = ["Operario", *month_labels, "Prom_5m", "Δ_5m", "Estado"]
+        for h, width in zip(headers, widths):
+            pdf.cell(width, 6, _sanitize_pdf_text(h), border=1, align="C")
+        pdf.ln(6)
+        pdf.set_font("Helvetica", "", 8)
+
+    if df is None or df.empty:
+        pdf.set_xy(x, y)
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(w, 7, _sanitize_pdf_text("Tendencia de eficiencia por operario"), ln=1)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(w, 6, _sanitize_pdf_text("Sin datos para la ventana seleccionada."), border=1)
+        return 6 + 7
+
+    rel = [0.26] + [0.09] * 5 + [0.09, 0.07, 0.13]
+    widths = [w * r for r in rel]
+    row_h = 6
+    bottom_y = pdf.h - pdf.b_margin
+    pdf.set_xy(x, y)
+    _draw_header("Tendencia de eficiencia por operario")
+    start_y = pdf.get_y()
+    rows_rendered = 0
+
+    for _, r in df.iterrows():
+        if rows_rendered >= max_rows or pdf.get_y() + row_h > bottom_y:
+            pdf.add_page()
+            pdf.set_xy(x, pdf.get_y())
+            _draw_header("Tendencia de eficiencia por operario (cont.)")
+            rows_rendered = 0
+        pdf.set_x(x)
+        operario = _truncate_to_width(pdf, str(r.get("Operario", "")), widths[0]-2)
+        pdf.cell(widths[0], row_h, _sanitize_pdf_text(operario), border=1, align="L")
+        for m, width in zip(months, widths[1:6]):
+            val = r.get(m, np.nan)
+            text = _fmt_pct(float(val) * 100.0) if pd.notna(val) else "N/D"
+            pdf.cell(width, row_h, _sanitize_pdf_text(text), border=1, align="C")
+        prom = r.get("Prom_5m")
+        delta = r.get("Delta")
+        state = r.get("Estado", "")
+        prom_text = _fmt_pct(float(prom) * 100.0) if pd.notna(prom) else "N/D"
+        delta_text = _fmt_pp(float(delta) * 100.0) if pd.notna(delta) else "N/D"
+        pdf.cell(widths[6], row_h, _sanitize_pdf_text(prom_text), border=1, align="C")
+        pdf.cell(widths[7], row_h, _sanitize_pdf_text(delta_text), border=1, align="C")
+        pdf.cell(widths[8], row_h, _sanitize_pdf_text(state), border=1, align="C")
+        pdf.ln(row_h)
+        rows_rendered += 1
+
+    used_h = pdf.get_y() - start_y + 6 + 7
+    return used_h
+
+def _render_efficiency_trend_section(pdf: FPDF, end: date, temps: list[str]) -> None:
+    df_eff, months = _load_efficiency_window(end)
+    summary = _build_efficiency_summary(df_eff, months)
+    if not summary.empty:
+        summary["Estado"] = summary.apply(_assign_trend_state, axis=1)
+    month_labels = [m.strftime("%b-%Y") for m in months]
+
+    pdf.add_page()
+    page_w = pdf.w - 2 * pdf.l_margin
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 8, _sanitize_pdf_text("Tendencia de eficiencia por operario (últimos 5 meses)"), ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 6, _sanitize_pdf_text(f"Objetivo: 80% | Ventana: {month_labels[0]} a {month_labels[-1]}"), ln=1)
+    pdf.ln(2)
+    legend = "\n".join([
+        "✅ Cumple: Prom_5m >= 80% y Final >= 80%",
+        "📈 Mejorando: Δ_5m >= +2 pp",
+        "🔻 Bajando: tendencia negativa o estancado bajo",
+        "⚪ Sin datos: menos de 3 meses con dato",
+    ])
+    pdf.set_font("Helvetica", "", 9)
+    pdf.multi_cell(0, 5, _sanitize_pdf_text(legend))
+    pdf.ln(2)
+
+    if summary.empty:
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(0, 6, _sanitize_pdf_text("Sin datos para la ventana seleccionada."))
+        return
+
+    summary["Delta_pp"] = summary["Delta"] * 100.0
+    chart_source = summary[summary["Meses_con_dato"] >= 2].copy()
+    chart_source = chart_source[pd.notna(chart_source["Delta_pp"])]
+    bajando = chart_source.sort_values("Delta_pp", ascending=True, kind="stable").head(15)
+    mejorando = chart_source[chart_source["Delta_pp"] > 0].sort_values("Delta_pp", ascending=True, kind="stable")
+    if len(mejorando) > 15:
+        mejorando = mejorando.tail(15).sort_values("Delta_pp", ascending=True, kind="stable")
+
+    bajando_path, bajando_ar = _plot_efficiency_delta_bars(
+        bajando,
+        "Operarios que más BAJAN (Top 15) – Cambio 5 meses (pp)",
+        "eficiencia_bajando_len"
+    )
+    mejorando_path, mejorando_ar = _plot_efficiency_delta_bars(
+        mejorando,
+        "Operarios que más MEJORAN (Top 15) – Cambio 5 meses (pp)",
+        "eficiencia_mejorando_len"
+    )
+    for p in [bajando_path, mejorando_path]:
+        if p:
+            temps.append(p)
+
+    y0 = pdf.get_y()
+    chart_w = page_w
+    if bajando_path and os.path.exists(bajando_path):
+        chart_h = chart_w * (bajando_ar if bajando_ar > 0 else 0.6)
+        pdf.image(bajando_path, x=pdf.l_margin, y=y0, w=chart_w)
+        pdf.set_y(y0 + chart_h + 4)
+    if mejorando_path and os.path.exists(mejorando_path):
+        y1 = pdf.get_y()
+        chart_h = chart_w * (mejorando_ar if mejorando_ar > 0 else 0.6)
+        if y1 + chart_h > pdf.h - pdf.b_margin:
+            pdf.add_page()
+            y1 = pdf.get_y()
+        pdf.image(mejorando_path, x=pdf.l_margin, y=y1, w=chart_w)
+        pdf.set_y(y1 + chart_h + 4)
+
+    summary = summary.sort_values(["Estado", "Operario"], kind="stable")
+    _render_efficiency_trend_table(pdf, summary, months, pdf.l_margin, pdf.get_y(), page_w, max_rows=28)
+
 def _render_signature(pdf: FPDF):
     pdf.ln(6)
     pdf.set_font("Helvetica", "I", 9)
@@ -443,6 +712,7 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
     gauge_path, gauge_ar = _plot_gauge_percent(prod_leno, "Productividad Filete Leno LINEA LENO TUBULAR")
     bars_path,  bars_ar  = _plot_downtime_bars_horizontal_leno(causes_df)
     turno_path, turno_ar = _plot_turno_bars_and_puestos_leno(turno_df)
+    temps = [p for p in [gauge_path, bars_path, turno_path] if p]
 
     # PDF
     title = "ANALISIS PROCESO FILETEADO"
@@ -496,6 +766,9 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
     y2 = pdf.get_y()
     _render_table_operario_total_leno(pdf, oper_df, pdf.l_margin, y2, page_w)
 
+    # Nueva sección de tendencia
+    _render_efficiency_trend_section(pdf, end, temps)
+
     # Firma
     _render_signature(pdf)
 
@@ -504,5 +777,4 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
     out_path = os.path.join(REPORTS_DIR, fname)
     pdf.output(out_path)
 
-    temps = [p for p in [gauge_path, bars_path, turno_path] if p]
     return out_path, temps
