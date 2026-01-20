@@ -119,7 +119,8 @@ def _connect_sqlite(db_path: str) -> sqlite3.Connection:
     return sqlite3.connect(db_path)
 
 def _quote_identifier(name: str) -> str:
-    return f"\"{name.replace('\"', '\"\"')}\""
+    escaped = name.replace('"', '""')
+    return f"\"{escaped}\""
 
 def _inspect_sqlite_tables(conn: sqlite3.Connection) -> list[str]:
     cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
@@ -154,14 +155,17 @@ def _month_window(end: date, months: int = 5) -> list[pd.Period]:
     start_period = end_period - (months - 1)
     return list(pd.period_range(start=start_period, end=end_period, freq="M"))
 
-def _load_efficiency_window(end: date, db_path: str = OPERARIOS_DB_PATH) -> tuple[pd.DataFrame, list[pd.Period]]:
-    months = _month_window(end, months=5)
+def _load_efficiency_window(end: date | None, db_path: str = OPERARIOS_DB_PATH) -> tuple[pd.DataFrame, list[pd.Period]]:
     if not os.path.exists(db_path):
+        end = end or date.today()
+        months = _month_window(end, months=5)
         return pd.DataFrame(columns=["Operario", "Month", "Eficiencia"]), months
     conn = _connect_sqlite(db_path)
     try:
         detected = _detect_efficiency_table(conn)
         if not detected:
+            end = end or date.today()
+            months = _month_window(end, months=5)
             return pd.DataFrame(columns=["Operario", "Month", "Eficiencia"]), months
         table, c_operario, c_fecha, c_eff = detected
         cols_sql = ", ".join([_quote_identifier(c_operario), _quote_identifier(c_fecha), _quote_identifier(c_eff)])
@@ -178,6 +182,12 @@ def _load_efficiency_window(end: date, db_path: str = OPERARIOS_DB_PATH) -> tupl
         max_eff = df["Eficiencia"].max()
         if max_eff > 1.5:
             df["Eficiencia"] = df["Eficiencia"] / 100.0
+    if end is None:
+        if not df.empty:
+            end = df["Fecha"].max().date()
+        else:
+            end = date.today()
+    months = _month_window(end, months=5)
     df["Month"] = df["Fecha"].dt.to_period("M")
     df = df[df["Month"].isin(months)]
     if df.empty:
@@ -619,7 +629,7 @@ def _render_efficiency_trend_table(pdf: FPDF, df: pd.DataFrame, months: list[pd.
     return used_h
 
 def _render_efficiency_trend_section(pdf: FPDF, end: date, temps: list[str]) -> None:
-    df_eff, months = _load_efficiency_window(end)
+    df_eff, months = _load_efficiency_window(None)
     summary = _build_efficiency_summary(df_eff, months)
     if not summary.empty:
         summary["Estado"] = summary.apply(_assign_trend_state, axis=1)
