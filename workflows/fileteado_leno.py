@@ -1170,7 +1170,8 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
                 5,
                 _sanitize_pdf_text(
                     "Nota: La tendencia compara el promedio de eficiencia de los primeros 2 meses "
-                    "vs los últimos 2 meses (ventana de 4 meses). Se incluye el %Efic Mes del último mes."
+                    "vs los últimos 2 meses (ventana de 4 meses), calculando (ultimos - anteriores). "
+                    "Se incluye el %Efic Mes del último mes."
                 ),
             )
 
