@@ -929,9 +929,20 @@ def _render_signature(pdf: FPDF):
 # PDF principal LENO
 # ────────────────────────────────────────────────────────────────────────────────
 class ReporteLeno(FPDF):
+    def __init__(self, start: date, end: date, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._start_date = start
+        self._end_date = end
+
     def header(self):
         self.set_font("Arial", "B", 16)
         self.cell(0, 10, "Analisis proceso Leno tubular", 0, 1, "C")
+        rango_txt = (
+            f"Rango del informe {self._start_date.strftime('%d/%m/%Y')} "
+            f"a {self._end_date.strftime('%d/%m/%Y')}"
+        )
+        self.set_font("Arial", "", 10)
+        self.cell(0, 6, rango_txt, 0, 1, "C")
         self.set_font("Arial", "", 10)
         fecha_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         self.cell(0, 10, f"Fecha y hora de generacion: {fecha_hora}", 0, 1, "R")
@@ -1140,7 +1151,7 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
     df_maq = _prepare_maquina_table(df_filt)
     df_ope = _prepare_operario_table(df_filt, end)
 
-    pdf = ReporteLeno(format="Letter")
+    pdf = ReporteLeno(start, end, format="Letter")
     pdf.add_page()
     if df_maq.empty:
         pdf.set_font("Arial", "B", 11)
