@@ -1024,6 +1024,7 @@ class ReporteLeno(FPDF):
 
 def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> tuple[float, float]:
     pdf.ln(4)
+    pdf.set_x(pdf.l_margin)
     pdf.set_font("Arial", "B", 12)
     pdf.set_fill_color(230, 230, 230)
     pdf.cell(0, 8, " 3. Datos globales (segun rango de fecha)", 0, 1, "L", True)
@@ -1031,6 +1032,7 @@ def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> tuple[float, float]:
 
     if df_maq is None or df_maq.empty:
         pdf.set_font("Arial", "", 9)
+        pdf.set_x(pdf.l_margin)
         pdf.multi_cell(0, 5, _sanitize_pdf_text("Sin datos globales disponibles."))
         return 0.0, 0.0
 
@@ -1054,6 +1056,7 @@ def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> tuple[float, float]:
         ("%eficiencia_total", f"{eficiencia_total:.2f}%"),
     ]
     for label, value in rows:
+        pdf.set_x(pdf.l_margin)
         pdf.cell(55, 6, _sanitize_pdf_text(label), 1, 0, "L")
         pdf.cell(0, 6, _sanitize_pdf_text(str(value)), 1, 1, "L")
     return prod_total, eficiencia_total
@@ -1063,12 +1066,14 @@ def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: fl
     diff_causas = eficiencia_total - prod_total
     restante = 80.0 - eficiencia_total
     pdf.ln(4)
+    pdf.set_x(pdf.l_margin)
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(0, 100, 0)
     pdf.cell(0, 6, _sanitize_pdf_text("Objetivo de productividad 80%."), 0, 1, "L")
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Arial", "B", 9)
     pdf.set_text_color(150, 0, 0)
+    pdf.set_x(pdf.l_margin)
     pdf.multi_cell(
         0,
         5,
@@ -1080,6 +1085,7 @@ def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: fl
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Arial", "B", 9)
     pdf.set_text_color(0, 0, 0)
+    pdf.set_x(pdf.l_margin)
     pdf.multi_cell(
         0,
         5,
@@ -1233,6 +1239,7 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
             pdf.tabla_operarios(df_ope)
             pdf.set_font("Arial", "I", 8)
             pdf.set_text_color(0, 0, 0)
+            pdf.set_x(pdf.l_margin)
             pdf.multi_cell(
                 0,
                 5,
