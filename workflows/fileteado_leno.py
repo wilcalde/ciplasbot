@@ -23,7 +23,7 @@ from services.session_memory import CONFIG_DIR
 # ────────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
-OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "operarios_leno_tubular.db")
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", "operarios_leno_tubular.db")
 
 COLS = {
     "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
@@ -828,96 +828,229 @@ def _render_signature(pdf: FPDF):
 # ────────────────────────────────────────────────────────────────────────────────
 # PDF principal LENO
 # ────────────────────────────────────────────────────────────────────────────────
+class ReporteLeno(FPDF):
+    def header(self):
+        self.set_font("Arial", "B", 16)
+        self.cell(0, 10, "Analisis proceso Leno tubular", 0, 1, "C")
+        self.set_font("Arial", "", 10)
+        fecha_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        self.cell(0, 10, f"Fecha y hora de generacion: {fecha_hora}", 0, 1, "R")
+        self.ln(5)
+
+    def tabla_maquinas(self, df: pd.DataFrame) -> None:
+        self.set_font("Arial", "B", 12)
+        self.set_fill_color(230, 230, 230)
+        self.cell(0, 10, " 1. Resumen de Produccion por Maquina", 0, 1, "L", True)
+        self.ln(2)
+
+        self.set_font("Arial", "B", 8)
+        self.set_fill_color(200, 220, 255)
+        cols = ["maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"]
+        widths = [25, 25, 25, 20, 25, 30, 30]
+
+        for i, col in enumerate(cols):
+            self.cell(widths[i], 8, col, 1, 0, "C", True)
+        self.ln()
+
+        self.set_font("Arial", "", 8)
+        for _, row in df.iterrows():
+            self.cell(widths[0], 7, str(row["Maquina"]), 1)
+            self.cell(widths[1], 7, f"{row['produccion']:,.0f}", 1, 0, "R")
+            self.cell(widths[2], 7, f"{row['t_corrida']:.2f}", 1, 0, "R")
+            self.cell(widths[3], 7, f"{row['T.perd']:.2f}", 1, 0, "R")
+            self.cell(widths[4], 7, f"{row['cor.estandar']:.2f}", 1, 0, "R")
+            self.cell(widths[5], 7, f"{row['%productividad']:.2f}%", 1, 0, "R")
+
+            if row["%eficiencia"] >= 80:
+                self.set_font("Arial", "B", 8)
+            self.cell(widths[6], 7, f"{row['%eficiencia']:.2f}%", 1, 0, "R")
+            self.set_font("Arial", "", 8)
+            self.ln()
+        self.ln(10)
+
+    def tabla_operarios(self, df: pd.DataFrame) -> None:
+        self.set_font("Arial", "B", 12)
+        self.set_fill_color(235, 241, 222)
+        self.cell(0, 10, " Seguimiento Eficiencia operarios", 0, 1, "L", True)
+        self.ln(2)
+
+        self.set_font("Arial", "B", 8)
+        self.set_fill_color(210, 230, 200)
+        cols = ["Nombre", "T. corrida", "T. perdido", "Cor. est.", "% Efic Mes", "Tendencia (4 meses)"]
+        widths = [65, 22, 22, 22, 22, 42]
+
+        for i, col in enumerate(cols):
+            self.cell(widths[i], 8, col, 1, 0, "C", True)
+        self.ln()
+
+        self.set_font("Arial", "", 7)
+        for _, row in df.iterrows():
+            if row["%eficiencia_mes"] >= 80:
+                self.set_fill_color(198, 239, 206)
+            elif row["%eficiencia_mes"] >= 75:
+                self.set_fill_color(255, 235, 156)
+            else:
+                self.set_fill_color(255, 255, 255)
+
+            self.cell(widths[0], 6, str(row["Nombre"])[:45], 1, 0, "L", True)
+            self.cell(widths[1], 6, f"{row['Tiempo_corrida']:.2f}", 1, 0, "R", True)
+            self.cell(widths[2], 6, f"{row['T.perdido']:.2f}", 1, 0, "R", True)
+            self.cell(widths[3], 6, f"{row['Cor.estandar']:.2f}", 1, 0, "R", True)
+            self.cell(widths[4], 6, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
+
+            trend_text = _sanitize_pdf_text(row["tendencia_label"])
+            if "↑" in trend_text:
+                self.set_text_color(0, 100, 0)
+            elif "↓" in trend_text:
+                self.set_text_color(150, 0, 0)
+            else:
+                self.set_text_color(0, 0, 0)
+
+            self.cell(widths[5], 6, trend_text, 1, 0, "C", True)
+            self.set_text_color(0, 0, 0)
+            self.ln()
+
+
+def _filter_leno_records(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    c_art = _find_col(df, COLS["articulo"])
+    c_maq = _find_col(df, COLS["maquina"])
+    if not (c_art and c_maq):
+        return pd.DataFrame()
+    mask = _starts_with_ci(df[c_art], "LEN") & _starts_with_ci(df[c_maq], "FILET")
+    return df.loc[mask].copy()
+
+
+def _prepare_maquina_table(df_prod: pd.DataFrame) -> pd.DataFrame:
+    if df_prod is None or df_prod.empty:
+        return pd.DataFrame(columns=[
+            "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
+        ])
+    c_maq = _find_col(df_prod, COLS["maquina"])
+    c_qty = _find_col(df_prod, COLS["cantidad"])
+    c_tc = _find_col(df_prod, COLS["tc"])
+    c_tp = _find_col(df_prod, COLS["tp"])
+    c_cs = _find_col(df_prod, COLS["cs"])
+    if not (c_maq and c_qty and c_tc and c_tp and c_cs):
+        return pd.DataFrame(columns=[
+            "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
+        ])
+
+    df_maq = df_prod.groupby(c_maq).agg({
+        c_qty: "sum",
+        c_tc: "sum",
+        c_tp: "sum",
+        c_cs: "sum",
+    }).reset_index()
+    df_maq.columns = ["Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar"]
+
+    for col in ["produccion", "t_corrida", "T.perd", "cor.estandar"]:
+        df_maq[col] = pd.to_numeric(df_maq[col], errors="coerce").fillna(0.0)
+
+    denom_prod = df_maq["t_corrida"] + df_maq["T.perd"]
+    df_maq["%productividad"] = np.where(denom_prod > 0, (df_maq["cor.estandar"] / denom_prod) * 100, 0.0)
+    df_maq["%eficiencia"] = np.where(df_maq["t_corrida"] > 0, (df_maq["cor.estandar"] / df_maq["t_corrida"]) * 100, 0.0)
+    df_maq.replace([np.inf, -np.inf], 0, inplace=True)
+    return df_maq
+
+
+def _trend_labeler(end_date: date, months: int = 4):
+    try:
+        df_hist = _read_efficiency_history_from_sqlite(end_date, months=months)
+    except Exception:
+        df_hist = pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+    if df_hist.empty:
+        def _label(_: str) -> str:
+            return "Sin historial"
+        return _label
+
+    _, _, periods = _month_window_bounds(end_date, months=months)
+    period_keys = [str(p) for p in periods]
+    df_hist = df_hist.copy()
+    df_hist["Operario_norm"] = df_hist["Operario"].astype(str).str.strip().str.casefold()
+    df_hist["Mes"] = df_hist["Mes"].astype(str)
+    df_hist = df_hist.groupby(["Operario_norm", "Mes"], as_index=False)["eficiencia_mes"].mean()
+
+    def _label(nombre: str) -> str:
+        op_key = (nombre or "").strip().casefold()
+        sub = df_hist[df_hist["Operario_norm"] == op_key]
+        if sub.empty:
+            return "Sin historial"
+        valores = []
+        for period in period_keys:
+            match = sub[sub["Mes"] == period]["eficiencia_mes"]
+            if match.empty:
+                return "Datos insuficientes (<4)"
+            valores.append(float(match.mean()))
+        if len(valores) < months:
+            return "Datos insuficientes (<4)"
+        diferencia = valores[-1] - valores[0]
+        if diferencia > 0.5:
+            return f"Mejora ↑ (+{diferencia:.1f}%)"
+        if diferencia < -0.5:
+            return f"Decreciente ↓ ({diferencia:.1f}%)"
+        return "Neutro"
+
+    return _label
+
+
+def _prepare_operario_table(df_prod: pd.DataFrame, end_date: date) -> pd.DataFrame:
+    if df_prod is None or df_prod.empty:
+        return pd.DataFrame(columns=[
+            "Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes", "tendencia_label"
+        ])
+    c_op = _find_col(df_prod, COLS["operario"])
+    c_tc = _find_col(df_prod, COLS["tc"])
+    c_tp = _find_col(df_prod, COLS["tp"])
+    c_cs = _find_col(df_prod, COLS["cs"])
+    if not (c_op and c_tc and c_tp and c_cs):
+        return pd.DataFrame(columns=[
+            "Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes", "tendencia_label"
+        ])
+
+    df_ope = df_prod.groupby(c_op).agg({
+        c_tc: "sum",
+        c_tp: "sum",
+        c_cs: "sum",
+    }).reset_index()
+    df_ope.columns = ["Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar"]
+    for col in ["Tiempo_corrida", "T.perdido", "Cor.estandar"]:
+        df_ope[col] = pd.to_numeric(df_ope[col], errors="coerce").fillna(0.0)
+    df_ope["%eficiencia_mes"] = np.where(
+        df_ope["Tiempo_corrida"] > 0,
+        (df_ope["Cor.estandar"] / df_ope["Tiempo_corrida"]) * 100,
+        0.0,
+    )
+    df_ope.replace([np.inf, -np.inf], 0, inplace=True)
+    df_ope = df_ope.sort_values(by="%eficiencia_mes", ascending=False)
+
+    labeler = _trend_labeler(end_date, months=4)
+    df_ope["tendencia_label"] = df_ope["Nombre"].apply(labeler)
+    return df_ope
+
+
 def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
     """
-    Construye el PDF de LENO con el mismo layout de GASA.
-    Retorna: (pdf_path, [temp_image_paths])
+    Construye el PDF de LENO usando la base filtrada por fechas del flujo.
+    Retorna: (pdf_path, [])
     """
-    # Indicadores y tablas (sobre toda la base del rango, luego subset LENO)
-    units = _compute_units_by_lines(df_range_filtered)
-    prod_leno = _compute_productivity_filete_leno(df_range_filtered)
-    causes_df = _downtime_causes_filete_leno(df_range_filtered)
-    refs_df   = _table_by_reference_leno(df_range_filtered)
-    turno_df  = _turno_prod_and_puestos_leno(df_range_filtered)
-    oper_df   = _table_operario_total_leno(df_range_filtered)
+    df_filt = _filter_leno_records(df_range_filtered)
+    df_maq = _prepare_maquina_table(df_filt)
+    df_ope = _prepare_operario_table(df_filt, end)
 
-    gauge_path, gauge_ar = _plot_gauge_percent(prod_leno, "Productividad Filete Leno LINEA LENO TUBULAR")
-    bars_path,  bars_ar  = _plot_downtime_bars_horizontal_leno(causes_df)
-    turno_path, turno_ar = _plot_turno_bars_and_puestos_leno(turno_df)
-    temps = [p for p in [gauge_path, bars_path, turno_path] if p]
-
-    # PDF
-    title = "ANALISIS PROCESO FILETEADO"
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf = ReporteLeno(format="Letter")
     pdf.add_page()
-    page_w = pdf.w - 2 * pdf.l_margin
+    if df_maq.empty:
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(0, 8, "Sin datos para Leno en el rango seleccionado.", 0, 1, "L")
+    else:
+        pdf.tabla_maquinas(df_maq)
+        if not df_ope.empty:
+            pdf.tabla_operarios(df_ope)
 
-    pdf.set_text_color(0, 128, 0); pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(page_w, 8, _sanitize_pdf_text("CIPLAS S.A.S"), ln=1, align="L")
-
-    pdf.set_text_color(0, 0, 0); pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 12, _sanitize_pdf_text(title), ln=1, align="C")
-
-    pdf.set_font("Helvetica", "", 12)
-    pdf.cell(0, 8, _sanitize_pdf_text(f"Rango seleccionado: {start.isoformat()} a {end.isoformat()}"), ln=1)
-    pdf.ln(2)
-
-    _render_units_row(pdf, units)
-
-    # Encabezado LENO
-    pdf.ln(2); pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, _sanitize_pdf_text("Filete Leno"), ln=1)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 6, _sanitize_pdf_text(f"Productividad del periodo: {_fmt_pct(prod_leno)}"), ln=1)
-
-    # Imágenes
-    y0 = pdf.get_y(); gap = 6.0
-    gauge_w = page_w * 0.34; bars_w = page_w - gauge_w - gap
-    max_h = 0.0
-    if gauge_path and os.path.exists(gauge_path):
-        gauge_h = gauge_w * (gauge_ar if gauge_ar > 0 else 0.7)
-        pdf.image(gauge_path, x=pdf.l_margin, y=y0, w=gauge_w); max_h = max(max_h, gauge_h)
-    if bars_path and os.path.exists(bars_path):
-        bars_h = bars_w * (bars_ar if bars_ar > 0 else 0.45)
-        pdf.image(bars_path, x=pdf.l_margin + gauge_w + gap, y=y0, w=bars_w); max_h = max(max_h, bars_h)
-    if max_h > 0:
-        pdf.set_y(y0 + max_h + 6)
-
-    # Tabla refs + gráfico turnos
-    pdf.ln(2)
-    y1 = pdf.get_y(); left_w = page_w * 0.55; right_w = page_w - left_w - gap
-    used_h_table = _render_table_refs_leno(pdf, refs_df, pdf.l_margin, y1, left_w, max_rows=16)
-    used_h_chart = 0.0
-    if turno_path and os.path.exists(turno_path):
-        chart_h = right_w * (turno_ar if turno_ar > 0 else 0.6)
-        pdf.image(turno_path, x=pdf.l_margin + left_w + gap, y=y1 + 9, w=right_w); used_h_chart = chart_h + 9
-    pdf.set_y(y1 + max(used_h_table, used_h_chart) + 6)
-
-    # Tabla operario total
-    y2 = pdf.get_y()
-    _render_table_operario_total_leno(pdf, oper_df, pdf.l_margin, y2, page_w)
-
-    # Nueva sección de tendencia
-    _, _, periods = _month_window_bounds(end, months=5)
-    ventana_txt = f"{periods[0].strftime('%b-%Y')} a {periods[-1].strftime('%b-%Y')}"
-    try:
-        df_mes = _read_efficiency_history_from_sqlite(end, months=5)
-        df_resumen = _compute_eff_trend_metrics(df_mes)
-        plot_path, plot_aspect = _plot_delta_bars(df_resumen)
-        if plot_path:
-            temps.append(plot_path)
-        df_resumen.attrs["plot_aspect"] = plot_aspect
-        _render_eff_trend_section(pdf, df_resumen, plot_path, ventana_txt)
-    except Exception as exc:
-        _render_eff_trend_error(pdf, ventana_txt, str(exc))
-
-    # Firma
-    _render_signature(pdf)
-
-    # Salida
-    fname = f"Analisis_Fileteado_LENO_{start.isoformat()}_{end.isoformat()}.pdf"
+    fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
     pdf.output(out_path)
-
-    return out_path, temps
+    return out_path, []
