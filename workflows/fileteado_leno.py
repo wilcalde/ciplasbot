@@ -23,7 +23,7 @@ from services.session_memory import CONFIG_DIR
 # ────────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
-OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", "operarios_leno_tubular.db")
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "tasks", "operarios_leno_tubular.db")
 
 COLS = {
     "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
@@ -139,7 +139,15 @@ def _month_window_bounds(end: date, months: int = 5) -> tuple[date, date, list[p
     return start_date, end_date, periods
 
 def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
-    operario_candidates = ["operario", "nombre", "nombre_operario", "apellidos_nombres", "operador", "empleado"]
+    operario_candidates = [
+        "operario",
+        "nombre",
+        "nombre_operario",
+        "apellidos_nombres",
+        "apellidos y nombres",
+        "operador",
+        "empleado",
+    ]
     fecha_candidates = ["fecha", "fecha_registro", "fecha_efectiva", "date", "datetime", "timestamp", "mes", "periodo"]
     eficiencia_candidates = ["eficiencia", "eficiencia_operario", "efficiency", "rendimiento", "productividad", "efic", "efic_",
                              "%efic", "porcentaje_eficiencia", "porcentaje_efic"]
@@ -185,27 +193,119 @@ def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
             }
     return best
 
+def _detect_efficiency_wide_table(conn: sqlite3.Connection) -> dict | None:
+    operario_candidates = [
+        "operario",
+        "nombre",
+        "nombre_operario",
+        "apellidos_nombres",
+        "apellidos y nombres",
+        "operador",
+        "empleado",
+    ]
+    eff_keywords = ("eficiencia", "efic")
+
+    best = None
+    best_score = -1
+    for table in _inspect_sqlite_tables(conn):
+        cols = _get_table_columns(conn, table)
+        if not cols:
+            continue
+        norm_map = {_normalize(c): c for c in cols}
+        c_operario = next((norm_map.get(_normalize(c)) for c in operario_candidates if _normalize(c) in norm_map), None)
+        if not c_operario:
+            continue
+        eff_cols = [c for c in cols if any(k in _normalize(c) for k in eff_keywords)]
+        if len(eff_cols) < 2:
+            continue
+        score = len(eff_cols)
+        if score > best_score:
+            best_score = score
+            best = {"table": table, "operario": c_operario, "eff_cols": eff_cols}
+    return best
+
+def _parse_month_label(label: str) -> pd.Period | None:
+    if not label:
+        return None
+    text = label.strip().lower()
+    month_map = {
+        "enero": 1, "ene": 1,
+        "febrero": 2, "feb": 2,
+        "marzo": 3, "mar": 3,
+        "abril": 4, "abr": 4,
+        "mayo": 5, "may": 5,
+        "junio": 6, "jun": 6,
+        "julio": 7, "jul": 7,
+        "agosto": 8, "ago": 8, "aug": 8,
+        "septiembre": 9, "setiembre": 9, "sep": 9, "sept": 9,
+        "octubre": 10, "oct": 10,
+        "noviembre": 11, "nov": 11,
+        "diciembre": 12, "dic": 12, "dec": 12,
+    }
+    m = re.search(r"([a-zñ]+)[\\s_-]*([0-9]{2,4})", text)
+    if not m:
+        return None
+    mes_txt = m.group(1)
+    year_txt = m.group(2)
+    if mes_txt not in month_map:
+        return None
+    year = int(year_txt)
+    if year < 100:
+        year += 2000
+    month = month_map[mes_txt]
+    return pd.Period(f"{year:04d}-{month:02d}", freq="M")
+
 def _read_efficiency_history_from_sqlite(end_date: date, months: int = 5) -> pd.DataFrame:
     if not os.path.exists(OPERARIOS_DB_PATH):
         raise FileNotFoundError(f"No existe el archivo {OPERARIOS_DB_PATH}")
     conn = _connect_sqlite(OPERARIOS_DB_PATH)
     try:
         source = _detect_efficiency_source(conn)
-        if not source:
-            raise RuntimeError("No se detectaron tablas/columnas con eficiencia.")
-        cols = [source["operario"], source["fecha"]]
-        if source["eficiencia"]:
-            cols.append(source["eficiencia"])
-        if source["corrstand"]:
-            cols.append(source["corrstand"])
-        if source["tc"]:
-            cols.append(source["tc"])
-        if source["tp"]:
-            cols.append(source["tp"])
-        cols_sql = ", ".join(_quote_identifier(c) for c in cols if c)
-        df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(source['table'])}", conn)
+        if source:
+            cols = [source["operario"], source["fecha"]]
+            if source["eficiencia"]:
+                cols.append(source["eficiencia"])
+            if source["corrstand"]:
+                cols.append(source["corrstand"])
+            if source["tc"]:
+                cols.append(source["tc"])
+            if source["tp"]:
+                cols.append(source["tp"])
+            cols_sql = ", ".join(_quote_identifier(c) for c in cols if c)
+            df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(source['table'])}", conn)
+        else:
+            wide = _detect_efficiency_wide_table(conn)
+            if not wide:
+                raise RuntimeError("No se detectaron tablas/columnas con eficiencia.")
+            cols_sql = ", ".join(_quote_identifier(c) for c in [wide["operario"], *wide["eff_cols"]])
+            df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(wide['table'])}", conn)
     finally:
         conn.close()
+
+    if source is None:
+        df = df.rename(columns={wide["operario"]: "Operario"})
+        df["Operario"] = df["Operario"].astype(str).str.strip()
+        long_rows = []
+        for col in wide["eff_cols"]:
+            period = _parse_month_label(col)
+            if period is None:
+                continue
+            series = pd.to_numeric(df[col], errors="coerce")
+            for operario, value in zip(df["Operario"], series):
+                if pd.isna(value):
+                    continue
+                long_rows.append({
+                    "Operario": operario,
+                    "Mes": period,
+                    "eficiencia_mes": float(value) * 100.0 if value <= 1.5 else float(value),
+                })
+        if not long_rows:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+        df_long = pd.DataFrame(long_rows)
+        start_date, end_date, periods = _month_window_bounds(end_date, months=months)
+        df_long = df_long[df_long["Mes"].isin(periods)]
+        df_long["Mes"] = df_long["Mes"].astype(str)
+        return df_long
 
     rename_map = {
         source["operario"]: "Operario",
