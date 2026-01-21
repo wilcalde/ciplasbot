@@ -1022,7 +1022,7 @@ class ReporteLeno(FPDF):
             self.ln()
 
 
-def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> None:
+def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> tuple[float, float]:
     pdf.ln(4)
     pdf.set_font("Arial", "B", 12)
     pdf.set_fill_color(230, 230, 230)
@@ -1032,7 +1032,7 @@ def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> None:
     if df_maq is None or df_maq.empty:
         pdf.set_font("Arial", "", 9)
         pdf.multi_cell(0, 5, _sanitize_pdf_text("Sin datos globales disponibles."))
-        return
+        return 0.0, 0.0
 
     totals = {
         "produccion": df_maq["produccion"].sum(),
@@ -1056,6 +1056,38 @@ def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> None:
     for label, value in rows:
         pdf.cell(55, 6, _sanitize_pdf_text(label), 1, 0, "L")
         pdf.cell(0, 6, _sanitize_pdf_text(str(value)), 1, 1, "L")
+    return prod_total, eficiencia_total
+
+
+def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: float) -> None:
+    diff_causas = eficiencia_total - prod_total
+    restante = 80.0 - eficiencia_total
+    pdf.ln(4)
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(0, 100, 0)
+    pdf.cell(0, 6, _sanitize_pdf_text("Objetivo de productividad 80%."), 0, 1, "L")
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_text_color(150, 0, 0)
+    pdf.multi_cell(
+        0,
+        5,
+        _sanitize_pdf_text(
+            "Las causas de tiempo perdido corresponden a "
+            f"{diff_causas:.1f} pp."
+        ),
+    )
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_text_color(0, 0, 0)
+    pdf.multi_cell(
+        0,
+        5,
+        _sanitize_pdf_text(
+            f"El restante {restante:.1f} pp es por baja eficiencia del proceso."
+        ),
+    )
+    pdf.set_text_color(0, 0, 0)
 
 
 def _filter_leno_records(df: pd.DataFrame) -> pd.DataFrame:
@@ -1210,7 +1242,8 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
                     "Se incluye el %Efic Mes del último mes."
                 ),
             )
-        _render_global_data(pdf, df_maq)
+        prod_total, eficiencia_total = _render_global_data(pdf, df_maq)
+        _render_productivity_note(pdf, eficiencia_total, prod_total)
 
     fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
