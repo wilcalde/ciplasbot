@@ -1079,7 +1079,7 @@ def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: fl
         5,
         _sanitize_pdf_text(
             "Las causas de tiempo perdido corresponden a "
-            f"{diff_causas:.1f} pp."
+            f"{diff_causas:.1f} puntos de productividad."
         ),
     )
     pdf.set_text_color(0, 0, 0)
@@ -1090,7 +1090,7 @@ def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: fl
         0,
         5,
         _sanitize_pdf_text(
-            f"El restante {restante:.1f} pp es por baja eficiencia del proceso."
+            f"El restante {restante:.1f} es por bajo eficiencia del proceso."
         ),
     )
     pdf.set_text_color(0, 0, 0)
