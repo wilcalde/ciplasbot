@@ -1022,6 +1022,42 @@ class ReporteLeno(FPDF):
             self.ln()
 
 
+def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> None:
+    pdf.ln(4)
+    pdf.set_font("Arial", "B", 12)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(0, 8, " 3. Datos globales (segun rango de fecha)", 0, 1, "L", True)
+    pdf.ln(2)
+
+    if df_maq is None or df_maq.empty:
+        pdf.set_font("Arial", "", 9)
+        pdf.multi_cell(0, 5, _sanitize_pdf_text("Sin datos globales disponibles."))
+        return
+
+    totals = {
+        "produccion": df_maq["produccion"].sum(),
+        "t_corrida": df_maq["t_corrida"].sum(),
+        "T.perd": df_maq["T.perd"].sum(),
+        "cor.estandar": df_maq["cor.estandar"].sum(),
+    }
+    denom_prod = totals["t_corrida"] + totals["T.perd"]
+    prod_total = (totals["cor.estandar"] / denom_prod) * 100 if denom_prod > 0 else 0.0
+    eficiencia_total = (totals["cor.estandar"] / totals["t_corrida"]) * 100 if totals["t_corrida"] > 0 else 0.0
+
+    pdf.set_font("Arial", "", 9)
+    rows = [
+        ("Produccion", _fmt_int(totals["produccion"])),
+        ("T.corrida", _fmt_float(totals["t_corrida"])),
+        ("Tiempo Perdido", _fmt_float(totals["T.perd"])),
+        ("Corrida Estandar", _fmt_float(totals["cor.estandar"])),
+        ("%productivida_total", f"{prod_total:.2f}%"),
+        ("%eficiencia_total", f"{eficiencia_total:.2f}%"),
+    ]
+    for label, value in rows:
+        pdf.cell(55, 6, _sanitize_pdf_text(label), 1, 0, "L")
+        pdf.cell(0, 6, _sanitize_pdf_text(str(value)), 1, 1, "L")
+
+
 def _filter_leno_records(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -1174,6 +1210,7 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
                     "Se incluye el %Efic Mes del último mes."
                 ),
             )
+        _render_global_data(pdf, df_maq)
 
     fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
