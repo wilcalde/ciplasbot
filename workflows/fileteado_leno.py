@@ -1010,9 +1010,9 @@ class ReporteLeno(FPDF):
             self.cell(widths[4], 6, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
 
             trend_text = _sanitize_pdf_text(row["tendencia_label"])
-            if "↑" in trend_text:
+            if "Mejora" in trend_text:
                 self.set_text_color(0, 100, 0)
-            elif "↓" in trend_text:
+            elif "Decreciente" in trend_text:
                 self.set_text_color(150, 0, 0)
             else:
                 self.set_text_color(0, 0, 0)
@@ -1097,12 +1097,15 @@ def _trend_labeler(end_date: date, months: int = 4):
             valores.append(float(match.mean()))
         if len(valores) < months:
             return "Datos insuficientes (<4)"
-        diferencia = valores[-1] - valores[0]
+        primeros_prom = sum(valores[:2]) / 2.0
+        ultimos_prom = sum(valores[-2:]) / 2.0
+        diferencia = ultimos_prom - primeros_prom
+        efic_mes = valores[-1]
         if diferencia > 0.5:
-            return f"Mejora ↑ (+{diferencia:.1f}%)"
+            return f"Mejora (+{diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%)"
         if diferencia < -0.5:
-            return f"Decreciente ↓ ({diferencia:.1f}%)"
-        return "Neutro"
+            return f"Decreciente ({diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%)"
+        return f"Neutro ({diferencia:+.1f} pp, Efic Mes {efic_mes:.1f}%)"
 
     return _label
 
@@ -1160,6 +1163,16 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
         pdf.tabla_maquinas(df_maq)
         if not df_ope.empty:
             pdf.tabla_operarios(df_ope)
+            pdf.set_font("Arial", "I", 8)
+            pdf.set_text_color(0, 0, 0)
+            pdf.multi_cell(
+                0,
+                5,
+                _sanitize_pdf_text(
+                    "Nota: La tendencia compara el promedio de eficiencia de los primeros 2 meses "
+                    "vs los últimos 2 meses (ventana de 4 meses). Se incluye el %Efic Mes del último mes."
+                ),
+            )
 
     fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
