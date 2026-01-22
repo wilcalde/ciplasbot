@@ -1140,7 +1140,7 @@ def _prepare_maquina_table(df_prod: pd.DataFrame) -> pd.DataFrame:
     return df_maq
 
 
-def _trend_labeler(end_date: date, months: int = 4):
+def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 4):
     try:
         df_hist = _read_efficiency_history_from_sqlite(end_date, months=months)
     except Exception:
@@ -1164,22 +1164,36 @@ def _trend_labeler(end_date: date, months: int = 4):
         if sub.empty:
             return "Sin historial"
         valores = []
-        for period in period_keys:
+        for period in period_keys[:-1]:
             match = sub[sub["Mes"] == period]["eficiencia_mes"]
             if match.empty:
                 return "Datos insuficientes (<4)"
             valores.append(float(match.mean()))
+        current_value = current_eff.get(op_key)
+        if current_value is None:
+            return "Datos insuficientes (<4)"
+        valores.append(float(current_value))
         if len(valores) < months:
             return "Datos insuficientes (<4)"
         primeros_prom = sum(valores[:2]) / 2.0
         ultimos_prom = sum(valores[-2:]) / 2.0
         diferencia = ultimos_prom - primeros_prom
         efic_mes = valores[-1]
+        promedio_4 = sum(valores) / len(valores)
         if diferencia > 0.5:
-            return f"Mejora (+{diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%)"
+            return (
+                f"Mejora (+{diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%, "
+                f"Prom 4m {promedio_4:.1f}%)"
+            )
         if diferencia < -0.5:
-            return f"Decreciente ({diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%)"
-        return f"Neutro ({diferencia:+.1f} pp, Efic Mes {efic_mes:.1f}%)"
+            return (
+                f"Decreciente ({diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%, "
+                f"Prom 4m {promedio_4:.1f}%)"
+            )
+        return (
+            f"Neutro ({diferencia:+.1f} pp, Efic Mes {efic_mes:.1f}%, "
+            f"Prom 4m {promedio_4:.1f}%)"
+        )
 
     return _label
 
@@ -1214,7 +1228,13 @@ def _prepare_operario_table(df_prod: pd.DataFrame, end_date: date) -> pd.DataFra
     df_ope.replace([np.inf, -np.inf], 0, inplace=True)
     df_ope = df_ope.sort_values(by="%eficiencia_mes", ascending=False)
 
-    labeler = _trend_labeler(end_date, months=4)
+    eff_map = dict(
+        zip(
+            df_ope["Nombre"].astype(str).str.strip().str.casefold(),
+            df_ope["%eficiencia_mes"].astype(float),
+        )
+    )
+    labeler = _trend_labeler(end_date, eff_map, months=4)
     df_ope["tendencia_label"] = df_ope["Nombre"].apply(labeler)
     return df_ope
 
