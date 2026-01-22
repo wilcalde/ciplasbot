@@ -1016,6 +1016,16 @@ class ReporteLeno(FPDF):
             lines = max(1, int(self.get_string_width(trend_text) / max(1, widths[5] - 2)) + 1)
             row_h = max(6, line_h * lines)
 
+            if base_y + row_h > self.h - self.b_margin:
+                self.add_page()
+                self.set_font("Arial", "B", 8)
+                self.set_fill_color(210, 230, 200)
+                for i, col in enumerate(cols):
+                    self.cell(widths[i], 8, col, 1, 0, "C", True)
+                self.ln()
+                self.set_font("Arial", "", 7)
+                base_y = self.get_y()
+
             self.set_xy(self.l_margin, base_y)
             self.cell(widths[0], row_h, str(row["Nombre"])[:45], 1, 0, "L", True)
             self.cell(widths[1], row_h, f"{row['Tiempo_corrida']:.2f}", 1, 0, "R", True)
