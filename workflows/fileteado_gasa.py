@@ -13,6 +13,7 @@ from services.session_memory import CONFIG_DIR
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", "unified_database_gasa.db")
+OPERARIOS_DB_FALLBACK = os.path.join(CONFIG_DIR, "tasks", "unified_database_gasa.db")
 
 COLS = {
     "articulo": ["Numero_Articulo", "numero_articulo", "Articulo", "articulo", "Numero de articulo"],
@@ -73,6 +74,14 @@ def _month_window_bounds(end: date, months: int = 4) -> tuple[date, date, list[p
     start_date = start_period.to_timestamp(how="start").date()
     end_date = end_period.to_timestamp(how="end").date()
     return start_date, end_date, periods
+
+
+def _resolve_operarios_db_path() -> str | None:
+    if os.path.exists(OPERARIOS_DB_PATH):
+        return OPERARIOS_DB_PATH
+    if os.path.exists(OPERARIOS_DB_FALLBACK):
+        return OPERARIOS_DB_FALLBACK
+    return None
 
 
 def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
@@ -188,9 +197,10 @@ def _parse_month_label(label: str) -> pd.Period | None:
 
 
 def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.DataFrame:
-    if not os.path.exists(OPERARIOS_DB_PATH):
+    db_path = _resolve_operarios_db_path()
+    if not db_path:
         return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-    conn = _connect_sqlite(OPERARIOS_DB_PATH)
+    conn = _connect_sqlite(db_path)
     try:
         source = _detect_efficiency_source(conn)
         if source:
