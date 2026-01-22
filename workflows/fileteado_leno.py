@@ -988,7 +988,7 @@ class ReporteLeno(FPDF):
         self.set_font("Arial", "B", 8)
         self.set_fill_color(210, 230, 200)
         cols = ["Nombre", "T. corrida", "T. perdido", "Cor. est.", "% Efic Mes", "Tendencia (4 meses)"]
-        widths = [65, 22, 22, 22, 22, 42]
+        widths = [52, 20, 20, 20, 18, 60]
 
         for i, col in enumerate(cols):
             self.cell(widths[i], 8, col, 1, 0, "C", True)
@@ -996,18 +996,13 @@ class ReporteLeno(FPDF):
 
         self.set_font("Arial", "", 7)
         for _, row in df.iterrows():
+            base_y = self.get_y()
             if row["%eficiencia_mes"] >= 80:
                 self.set_fill_color(198, 239, 206)
             elif row["%eficiencia_mes"] >= 75:
                 self.set_fill_color(255, 235, 156)
             else:
                 self.set_fill_color(255, 255, 255)
-
-            self.cell(widths[0], 6, str(row["Nombre"])[:45], 1, 0, "L", True)
-            self.cell(widths[1], 6, f"{row['Tiempo_corrida']:.2f}", 1, 0, "R", True)
-            self.cell(widths[2], 6, f"{row['T.perdido']:.2f}", 1, 0, "R", True)
-            self.cell(widths[3], 6, f"{row['Cor.estandar']:.2f}", 1, 0, "R", True)
-            self.cell(widths[4], 6, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
 
             trend_text = _sanitize_pdf_text(row["tendencia_label"])
             if "Mejora" in trend_text:
@@ -1017,9 +1012,20 @@ class ReporteLeno(FPDF):
             else:
                 self.set_text_color(0, 0, 0)
 
-            self.cell(widths[5], 6, trend_text, 1, 0, "C", True)
+            line_h = 4
+            lines = max(1, int(self.get_string_width(trend_text) / max(1, widths[5] - 2)) + 1)
+            row_h = max(6, line_h * lines)
+
+            self.set_xy(self.l_margin, base_y)
+            self.cell(widths[0], row_h, str(row["Nombre"])[:45], 1, 0, "L", True)
+            self.cell(widths[1], row_h, f"{row['Tiempo_corrida']:.2f}", 1, 0, "R", True)
+            self.cell(widths[2], row_h, f"{row['T.perdido']:.2f}", 1, 0, "R", True)
+            self.cell(widths[3], row_h, f"{row['Cor.estandar']:.2f}", 1, 0, "R", True)
+            self.cell(widths[4], row_h, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
+
+            self.multi_cell(widths[5], line_h, trend_text, 1, "L", True)
             self.set_text_color(0, 0, 0)
-            self.ln()
+            self.set_y(base_y + row_h)
 
 
 def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> tuple[float, float]:
