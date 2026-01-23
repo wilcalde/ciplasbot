@@ -880,6 +880,33 @@ def _prepare_operario_table_planas(df_prod: pd.DataFrame, end_date: date) -> pd.
     return df_ope
 
 
+def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: float) -> None:
+    diff_causas = eficiencia_total - prod_total
+    restante = 80.0 - eficiencia_total
+    pdf.ln(4)
+    pdf.set_x(pdf.l_margin)
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(0, 100, 0)
+    pdf.cell(0, 6, "Objetivo de productividad 80%.", 0, 1, "L")
+    pdf.set_text_color(150, 0, 0)
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        5,
+        f"Las causas de tiempo perdido corresponden a {diff_causas:.1f} puntos de productividad.",
+    )
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        5,
+        f"El restante {restante:.1f} es por bajo eficiencia del proceso.",
+    )
+    pdf.set_text_color(0, 0, 0)
+
+
 def build_pdf_planas(df_range_filtered: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
     df_filt = _filter_planas_records(df_range_filtered)
     df_maq = _prepare_maquina_table_planas(df_filt)
@@ -891,6 +918,18 @@ def build_pdf_planas(df_range_filtered: pd.DataFrame, start: date, end: date) ->
         pdf.set_font("Arial", "B", 11)
         pdf.cell(0, 8, "Sin datos para Planas en el rango seleccionado.", 0, 1, "L")
     else:
+        totals = {
+            "produccion": df_maq["produccion"].sum(),
+            "t_corrida": df_maq["t_corrida"].sum(),
+            "T.perd": df_maq["T.perd"].sum(),
+            "cor.estandar": df_maq["cor.estandar"].sum(),
+        }
+        denom_prod = totals["t_corrida"] + totals["T.perd"]
+        prod_total = (totals["cor.estandar"] / denom_prod) * 100 if denom_prod > 0 else 0.0
+        eficiencia_total = (totals["cor.estandar"] / totals["t_corrida"]) * 100 if totals["t_corrida"] > 0 else 0.0
+
+        _render_productivity_note(pdf, eficiencia_total, prod_total)
+        pdf.ln(4)
         pdf.tabla_maquinas(df_maq)
         if not df_ope.empty:
             pdf.tabla_operarios(df_ope)
