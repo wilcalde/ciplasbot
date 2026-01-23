@@ -922,7 +922,7 @@ def _render_eff_trend_error(pdf: FPDF, ventana_txt: str, error_message: str) -> 
 def _render_signature(pdf: FPDF):
     pdf.ln(6)
     pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por CIPLASBOT - Agente I.A - Creado por Ing. Wilson Calderon"),
+    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por Agente IA CiplasBot 🤖"),
              ln=1, align="C")
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -1298,6 +1298,7 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
                 ),
             )
         _render_global_data(pdf, df_maq)
+        _render_signature(pdf)
 
     fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)

@@ -515,6 +515,10 @@ def build_pdf_gasa(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
         if not df_ope.empty:
             pdf.tabla_operarios(df_ope)
 
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 8, "Informe Generado por Agente IA CiplasBot 🤖", 0, 1, "C")
+
     fname = f"Analisis_Proceso_Gasa_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
     pdf.output(out_path)
