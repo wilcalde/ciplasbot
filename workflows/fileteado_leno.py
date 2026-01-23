@@ -1270,6 +1270,18 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
         pdf.set_font("Arial", "B", 11)
         pdf.cell(0, 8, "Sin datos para Leno en el rango seleccionado.", 0, 1, "L")
     else:
+        totals = {
+            "produccion": df_maq["produccion"].sum(),
+            "t_corrida": df_maq["t_corrida"].sum(),
+            "T.perd": df_maq["T.perd"].sum(),
+            "cor.estandar": df_maq["cor.estandar"].sum(),
+        }
+        denom_prod = totals["t_corrida"] + totals["T.perd"]
+        prod_total = (totals["cor.estandar"] / denom_prod) * 100 if denom_prod > 0 else 0.0
+        eficiencia_total = (totals["cor.estandar"] / totals["t_corrida"]) * 100 if totals["t_corrida"] > 0 else 0.0
+
+        _render_productivity_note(pdf, eficiencia_total, prod_total)
+        pdf.ln(4)
         pdf.tabla_maquinas(df_maq)
         if not df_ope.empty:
             pdf.tabla_operarios(df_ope)
@@ -1285,8 +1297,7 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
                     "Se incluye el %Efic Mes del último mes."
                 ),
             )
-        prod_total, eficiencia_total = _render_global_data(pdf, df_maq)
-        _render_productivity_note(pdf, eficiencia_total, prod_total)
+        _render_global_data(pdf, df_maq)
 
     fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
