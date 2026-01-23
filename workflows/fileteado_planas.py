@@ -690,7 +690,7 @@ def _render_table_operario_total_planas(pdf: FPDF, df: pd.DataFrame, x: float, y
 def _render_signature(pdf: FPDF):
     pdf.ln(6)
     pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por Agente IA CiplasBot 🤖"),
+    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por Agente IA CiplasBot"),
              ln=1, align="C")
 
 # ────────────────────────────────────────────────────────────────────────────────

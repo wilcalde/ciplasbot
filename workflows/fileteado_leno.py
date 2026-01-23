@@ -922,7 +922,7 @@ def _render_eff_trend_error(pdf: FPDF, ventana_txt: str, error_message: str) -> 
 def _render_signature(pdf: FPDF):
     pdf.ln(6)
     pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por Agente IA CiplasBot 🤖"),
+    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por Agente IA CiplasBot"),
              ln=1, align="C")
 
 # ────────────────────────────────────────────────────────────────────────────────
