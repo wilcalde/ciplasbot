@@ -13,6 +13,7 @@ from openai import OpenAI
 
 # Flujos de supervisión
 from workflows.fileteado_report import handle_fileteado_message
+from workflows.fileteado_efficiency_report import handle_fileteado_efficiency_request
 from workflows.daily_report import update_alert_status, check_alert_already_sent, get_admin_phone
 from workflows.supervision_questions import (
     handle_response as supervision_handle_response,
@@ -420,6 +421,15 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
         handled_fileteado = False
     if handled_fileteado:
         return {"status": "ok", "detail": "fileteado_report_handled"}
+
+    # 4.5) Informe eficiencia fileteado (admin)
+    try:
+        handled_eff = handle_fileteado_efficiency_request(phone_key, texto)
+    except Exception as e:
+        print(f"❌ Error en handle_fileteado_efficiency_request: {e}")
+        handled_eff = False
+    if handled_eff:
+        return {"status": "ok", "detail": "fileteado_efficiency_handled"}
 
     # (Por si llegó sin prefijo, intenta comando de admin otra vez)
     try:
