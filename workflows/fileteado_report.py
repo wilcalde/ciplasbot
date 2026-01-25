@@ -840,48 +840,20 @@ def handle_fileteado_message(phone_key: str, text: str) -> bool:
 
         # ── GASA (generación interna)
         elif choice == "gasa":
-            gauge_path = bars_path = turno_path = None
             try:
-                units = _compute_units_by_lines(df_sel)
-                prod_gasa = _compute_productivity_filete_gasa(df_sel)
-                gauge_path, gauge_ar = _plot_gauge_percent(prod_gasa, "Productividad Filete Gasa")
-                causes_df = _downtime_causes_filete_gasa(df_sel)
-                bars_path, bars_ar = _plot_downtime_bars_horizontal(causes_df)
-                refs_df = _table_by_reference(df_sel)
-                turno_df = _turno_prod_and_puestos(df_sel)
-                turno_path, turno_ar = _plot_turno_bars_and_puestos(turno_df)
-                oper_total_df = _table_operario_total(df_sel)
+                from workflows.fileteado_gasa import build_pdf_gasa
+                pdf_path, temp_paths = build_pdf_gasa(df_sel, start, end)
             except Exception as e:
-                print(f"❌ Error en cálculos/graficación (GASA): {e}")
-                send_whatsapp_message(phone_key, "❌ Hubo un problema calculando indicadores. Intenta nuevamente.")
-                return True
-
-            try:
-                pdf_path = _build_pdf_fileteado(
-                    start, end, units, prod_gasa,
-                    (gauge_path, gauge_ar),
-                    (bars_path,  bars_ar),
-                    refs_df,
-                    (turno_path, turno_ar),
-                    oper_total_df
-                )
-            except Exception as e:
-                sessions[phone_key].pop("fileteado_state", None)
-                send_whatsapp_message(phone_key, f"❌ Error generando el PDF: {e}")
-                for p in (gauge_path, bars_path, turno_path):
-                    try:
-                        if p and os.path.exists(p):
-                            os.remove(p)
-                    except Exception:
-                        pass
+                print(f"❌ Error generando GASA: {e}")
+                send_whatsapp_message(phone_key, "❌ Hubo un problema generando el informe GASA.")
                 return True
 
             try:
                 send_whatsapp_document(phone_key, pdf_path, caption="📄 Análisis proceso fileteado – GASA")
             except Exception as e:
-                send_whatsapp_message(phone_key, f"❌ No pude enviar el informe: {e}")
+                send_whatsapp_message(phone_key, f"❌ No pude enviar el informe GASA: {e}")
 
-            for p in (pdf_path, gauge_path, bars_path, turno_path):
+            for p in [pdf_path, *(temp_paths or [])]:
                 try:
                     if p and os.path.exists(p):
                         os.remove(p)
@@ -897,5 +869,4 @@ def handle_fileteado_message(phone_key: str, text: str) -> bool:
 
     # No lo manejo
     return False
-
 
