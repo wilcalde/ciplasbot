@@ -207,9 +207,11 @@ def handle_fileteado_efficiency_request(phone_key: str, text: str) -> bool:
             "supervisor_phones": sorted(supervisor_phones),
             "pending_paths": temp_paths,
         }
+        supervisor_phone_display = " / ".join(sorted(supervisor_phones)) if supervisor_phones else "N/D"
         send_whatsapp_message(
             phone_key,
-            f"¿Deseas enviar estos informes al supervisor {supervisor_name}? Responde *si* o *no*."
+            ("¿Deseas enviar estos informes al supervisor "
+             f"{supervisor_name} ({supervisor_phone_display})? Responde *si* o *no*.")
         )
         return True
 
