@@ -56,7 +56,8 @@ def _find_fileteado_supervisors() -> list[tuple[str, str]]:
             continue
         role = (user.get("role") or "").casefold()
         area = (user.get("area") or user.get("linea") or user.get("linea_produccion") or "").casefold()
-        if "fileteado" in role or "fileteado" in area:
+        process = (user.get("process") or "").casefold()
+        if "fileteado" in role or "fileteado" in area or "fileteado" in process:
             _push_supervisor(user.get("name") or user.get("nombre"), user.get("phone_e164") or user.get("phone"))
 
     try:
