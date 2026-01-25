@@ -533,6 +533,45 @@ def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: fl
     pdf.set_text_color(0, 0, 0)
 
 
+def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> None:
+    pdf.ln(4)
+    pdf.set_x(pdf.l_margin)
+    pdf.set_font("Arial", "B", 12)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(0, 8, " 3. Datos globales (segun rango de fecha)", 0, 1, "L", True)
+    pdf.ln(2)
+
+    if df_maq is None or df_maq.empty:
+        pdf.set_font("Arial", "", 9)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 5, "Sin datos globales disponibles.")
+        return
+
+    totals = {
+        "produccion": df_maq["produccion"].sum(),
+        "t_corrida": df_maq["t_corrida"].sum(),
+        "T.perd": df_maq["T.perd"].sum(),
+        "cor.estandar": df_maq["cor.estandar"].sum(),
+    }
+    denom_prod = totals["t_corrida"] + totals["T.perd"]
+    prod_total = (totals["cor.estandar"] / denom_prod) * 100 if denom_prod > 0 else 0.0
+    eficiencia_total = (totals["cor.estandar"] / totals["t_corrida"]) * 100 if totals["t_corrida"] > 0 else 0.0
+
+    pdf.set_font("Arial", "", 9)
+    rows = [
+        ("Produccion", f"{totals['produccion']:,.0f}"),
+        ("T.corrida", f"{totals['t_corrida']:.2f}"),
+        ("Tiempo Perdido", f"{totals['T.perd']:.2f}"),
+        ("Corrida Estandar", f"{totals['cor.estandar']:.2f}"),
+        ("%productivida_total", f"{prod_total:.2f}%"),
+        ("%eficiencia_total", f"{eficiencia_total:.2f}%"),
+    ]
+    for label, value in rows:
+        pdf.set_x(pdf.l_margin)
+        pdf.cell(55, 6, label, 1, 0, "L")
+        pdf.cell(0, 6, str(value), 1, 1, "L")
+
+
 def build_pdf_gasa(df_range_filtered: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
     df_filt = _filter_gasa_records(df_range_filtered)
     df_maq = _prepare_maquina_table(df_filt)
@@ -559,6 +598,7 @@ def build_pdf_gasa(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
         pdf.tabla_maquinas(df_maq)
         if not df_ope.empty:
             pdf.tabla_operarios(df_ope)
+        _render_global_data(pdf, df_maq)
 
     pdf.ln(6)
     pdf.set_font("Helvetica", "I", 9)

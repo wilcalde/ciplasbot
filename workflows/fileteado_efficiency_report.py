@@ -33,8 +33,8 @@ def _collect_user_pools(users_data: dict) -> list:
     return pools
 
 
-def _find_fileteado_supervisors() -> set[str]:
-    phones: set[str] = set()
+def _find_fileteado_supervisors() -> list[tuple[str, str]]:
+    supervisors: list[tuple[str, str]] = []
     users_data = {}
     try:
         with open(SUPERVISORS_FILE, encoding="utf-8") as f:
@@ -42,16 +42,14 @@ def _find_fileteado_supervisors() -> set[str]:
     except Exception:
         users_data = {}
 
-    def _push_phone(raw: str | None) -> None:
+    def _push_supervisor(name: str | None, raw: str | None) -> None:
         if not raw:
             return
         digits = _normalize_phone(raw)
         if not digits:
             return
-        phones.add(digits)
         e164 = _normalize_phone(canon_phone_e164_co(digits) or digits)
-        if e164:
-            phones.add(e164)
+        supervisors.append((name or "Supervisor", e164 or digits))
 
     for user in _collect_user_pools(users_data):
         if not isinstance(user, dict):
@@ -59,7 +57,7 @@ def _find_fileteado_supervisors() -> set[str]:
         role = (user.get("role") or "").casefold()
         area = (user.get("area") or user.get("linea") or user.get("linea_produccion") or "").casefold()
         if "fileteado" in role or "fileteado" in area:
-            _push_phone(user.get("phone_e164") or user.get("phone"))
+            _push_supervisor(user.get("name") or user.get("nombre"), user.get("phone_e164") or user.get("phone"))
 
     try:
         from config.users import SUPERVISORS
@@ -67,7 +65,7 @@ def _find_fileteado_supervisors() -> set[str]:
         SUPERVISORS = {}
     for name, phone in SUPERVISORS.items():
         if "filete" in str(name).casefold():
-            _push_phone(phone)
+            _push_supervisor(str(name), phone)
 
     try:
         from config.user import SUPERVISORS as LEGACY_SUPERVISORS  # type: ignore
@@ -75,9 +73,13 @@ def _find_fileteado_supervisors() -> set[str]:
         LEGACY_SUPERVISORS = {}
     for name, phone in LEGACY_SUPERVISORS.items():
         if "filete" in str(name).casefold():
-            _push_phone(phone)
+            _push_supervisor(str(name), phone)
 
-    return phones
+    uniq: dict[str, str] = {}
+    for name, phone in supervisors:
+        if phone not in uniq:
+            uniq[phone] = name
+    return [(name, phone) for phone, name in uniq.items()]
 
 
 def _notify_recipients(phones: set[str], message: str) -> None:
@@ -88,6 +90,15 @@ def _notify_recipients(phones: set[str], message: str) -> None:
 def _send_reports_to_recipients(phones: set[str], pdf_path: str, caption: str) -> None:
     for phone in phones:
         send_whatsapp_document(phone, pdf_path, caption=caption)
+
+
+def _cleanup_paths(paths: list[str]) -> None:
+    for p in paths:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
 
 
 def handle_fileteado_efficiency_request(phone_key: str, text: str) -> bool:
@@ -149,65 +160,73 @@ def handle_fileteado_efficiency_request(phone_key: str, text: str) -> bool:
             return True
 
         df_sel = _filter_by_range(df, start, end, fecha_col)
-        recipients = {_normalize_phone(phone_key)}
-        recipients.update(_find_fileteado_supervisors())
-        recipients = {r for r in recipients if r}
+        admin_phone = _normalize_phone(phone_key)
+        supervisors = _find_fileteado_supervisors()
+        supervisor_name = supervisors[0][0] if supervisors else "supervisor de fileteado"
+        supervisor_phones = {phone for _, phone in supervisors}
+        recipients_admin = {admin_phone} if admin_phone else set()
 
-        _notify_recipients(recipients, "📄 Generando informes de eficiencia de fileteado...")
+        _notify_recipients(recipients_admin, "📄 Generando informes de eficiencia de fileteado...")
 
+        temp_paths: list[str] = []
         try:
             from workflows.fileteado_gasa import build_pdf_gasa
             gasa_pdf, gasa_tmp = build_pdf_gasa(df_sel, start, end)
-            _send_reports_to_recipients(recipients, gasa_pdf, "📄 Informe eficiencia – GASA")
-            for p in [gasa_pdf, *(gasa_tmp or [])]:
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
+            temp_paths.extend([gasa_pdf, *(gasa_tmp or [])])
+            _send_reports_to_recipients(recipients_admin, gasa_pdf, "📄 Informe eficiencia – GASA")
         except Exception as e:
             send_whatsapp_message(phone_key, f"❌ Error generando informe GASA: {e}")
 
         try:
             from workflows.fileteado_leno import build_pdf_leno
             leno_pdf, leno_tmp = build_pdf_leno(df_sel, start, end)
-            _send_reports_to_recipients(recipients, leno_pdf, "📄 Informe eficiencia – LENO")
-            for p in [leno_pdf, *(leno_tmp or [])]:
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
+            temp_paths.extend([leno_pdf, *(leno_tmp or [])])
+            _send_reports_to_recipients(recipients_admin, leno_pdf, "📄 Informe eficiencia – LENO")
         except Exception as e:
             send_whatsapp_message(phone_key, f"❌ Error generando informe LENO: {e}")
 
         try:
             from workflows.fileteado_planas import build_pdf_planas
             planas_pdf, planas_tmp = build_pdf_planas(df_sel, start, end)
-            _send_reports_to_recipients(recipients, planas_pdf, "📄 Informe eficiencia – PLANAS")
-            for p in [planas_pdf, *(planas_tmp or [])]:
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
+            temp_paths.extend([planas_pdf, *(planas_tmp or [])])
+            _send_reports_to_recipients(recipients_admin, planas_pdf, "📄 Informe eficiencia – PLANAS")
         except Exception as e:
             send_whatsapp_message(phone_key, f"❌ Error generando informe PLANAS: {e}")
 
         try:
             from workflows.fileteado_cortadoras import build_pdf_cortadoras
             cort_pdf, cort_tmp = build_pdf_cortadoras(df_sel, start, end)
-            _send_reports_to_recipients(recipients, cort_pdf, "📄 Informe eficiencia – CORTADORAS")
-            for p in [cort_pdf, *(cort_tmp or [])]:
-                try:
-                    if p and os.path.exists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
+            temp_paths.extend([cort_pdf, *(cort_tmp or [])])
+            _send_reports_to_recipients(recipients_admin, cort_pdf, "📄 Informe eficiencia – CORTADORAS")
         except Exception as e:
             send_whatsapp_message(phone_key, f"❌ Error generando informe CORTADORAS: {e}")
 
-        send_whatsapp_message(phone_key, "✅ Informes de eficiencia enviados.")
+        sessions.setdefault(phone_key, {})["fileteado_eff_state"] = {
+            "awaiting_confirm": True,
+            "supervisor_name": supervisor_name,
+            "supervisor_phones": sorted(supervisor_phones),
+            "pending_paths": temp_paths,
+        }
+        send_whatsapp_message(
+            phone_key,
+            f"¿Deseas enviar estos informes al supervisor {supervisor_name}? Responde *si* o *no*."
+        )
+        return True
+
+    if state.get("awaiting_confirm"):
+        reply = low.strip()
+        supervisor_name = state.get("supervisor_name") or "supervisor de fileteado"
+        supervisor_phones = set(state.get("supervisor_phones") or [])
+        pending_paths = list(state.get("pending_paths") or [])
+        if reply in ("si", "sí", "s", "yes"):
+            if supervisor_phones:
+                for path in pending_paths:
+                    if path.lower().endswith(".pdf"):
+                        _send_reports_to_recipients(supervisor_phones, path, f"📄 Informe eficiencia – {supervisor_name}")
+            send_whatsapp_message(phone_key, f"✅ Informes enviados a {supervisor_name}.")
+        else:
+            send_whatsapp_message(phone_key, "✅ Listo, no se enviaron informes al supervisor.")
+        _cleanup_paths(pending_paths)
         sessions[phone_key].pop("fileteado_eff_state", None)
         return True
 
