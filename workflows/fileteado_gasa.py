@@ -372,8 +372,8 @@ class ReporteGasa(FPDF):
 
         self.set_font("Arial", "B", 8)
         self.set_fill_color(210, 230, 200)
-        cols = ["Nombre", "T. corrida", "T. perdido", "Cor. est.", "% Efic Mes", "Tendencia (4 meses)"]
-        widths = [52, 20, 20, 20, 18, 60]
+        cols = ["Nombre", "Produccion", "T. corrida", "T. perdido", "Cor. est.", "% Efic periodo", "Tendencia (4 meses)"]
+        widths = [40, 16, 16, 16, 16, 18, 68]
 
         for i, col in enumerate(cols):
             self.cell(widths[i], 8, col, 1, 0, "C", True)
@@ -398,7 +398,7 @@ class ReporteGasa(FPDF):
                 self.set_text_color(0, 0, 0)
 
             line_h = 4
-            lines = max(1, int(self.get_string_width(trend_text) / max(1, widths[5] - 2)) + 1)
+            lines = max(1, int(self.get_string_width(trend_text) / max(1, widths[6] - 2)) + 1)
             row_h = max(6, line_h * lines)
 
             if base_y + row_h > self.h - self.b_margin:
@@ -413,11 +413,12 @@ class ReporteGasa(FPDF):
 
             self.set_xy(self.l_margin, base_y)
             self.cell(widths[0], row_h, str(row["Nombre"])[:45], 1, 0, "L", True)
-            self.cell(widths[1], row_h, f"{row['Tiempo_corrida']:.2f}", 1, 0, "R", True)
-            self.cell(widths[2], row_h, f"{row['T.perdido']:.2f}", 1, 0, "R", True)
-            self.cell(widths[3], row_h, f"{row['Cor.estandar']:.2f}", 1, 0, "R", True)
-            self.cell(widths[4], row_h, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
-            self.multi_cell(widths[5], line_h, trend_text, 1, "L", True)
+            self.cell(widths[1], row_h, f"{row['Produccion']:,.0f}", 1, 0, "R", True)
+            self.cell(widths[2], row_h, f"{row['Tiempo_corrida']:.2f}", 1, 0, "R", True)
+            self.cell(widths[3], row_h, f"{row['T.perdido']:.2f}", 1, 0, "R", True)
+            self.cell(widths[4], row_h, f"{row['Cor.estandar']:.2f}", 1, 0, "R", True)
+            self.cell(widths[5], row_h, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
+            self.multi_cell(widths[6], line_h, trend_text, 1, "L", True)
             self.set_text_color(0, 0, 0)
             self.set_y(base_y + row_h)
 
@@ -469,24 +470,29 @@ def _prepare_maquina_table(df_prod: pd.DataFrame) -> pd.DataFrame:
 def _prepare_operario_table(df_prod: pd.DataFrame, end_date: date) -> pd.DataFrame:
     if df_prod is None or df_prod.empty:
         return pd.DataFrame(columns=[
-            "Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes"
+            "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes"
         ])
     c_op = _find_col(df_prod, COLS["operario"])
+    c_qty = _find_col(df_prod, COLS["cantidad"])
     c_tc = _find_col(df_prod, COLS["tc"])
     c_tp = _find_col(df_prod, COLS["tp"])
     c_cs = _find_col(df_prod, COLS["cs"])
     if not (c_op and c_tc and c_tp and c_cs):
         return pd.DataFrame(columns=[
-            "Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes"
+            "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes"
         ])
 
-    df_ope = df_prod.groupby(c_op).agg({
-        c_tc: "sum",
-        c_tp: "sum",
-        c_cs: "sum",
-    }).reset_index()
-    df_ope.columns = ["Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar"]
-    for col in ["Tiempo_corrida", "T.perdido", "Cor.estandar"]:
+    agg_map = {c_tc: "sum", c_tp: "sum", c_cs: "sum"}
+    if c_qty:
+        agg_map[c_qty] = "sum"
+    df_ope = df_prod.groupby(c_op).agg(agg_map).reset_index()
+    columns = ["Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar"]
+    if c_qty:
+        columns.append("Produccion")
+    df_ope.columns = columns
+    if "Produccion" not in df_ope.columns:
+        df_ope["Produccion"] = 0.0
+    for col in ["Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar"]:
         df_ope[col] = pd.to_numeric(df_ope[col], errors="coerce").fillna(0.0)
     df_ope["%eficiencia_mes"] = np.where(
         df_ope["Tiempo_corrida"] > 0,

@@ -69,6 +69,14 @@ def _find_fileteado_supervisors() -> set[str]:
         if "filete" in str(name).casefold():
             _push_phone(phone)
 
+    try:
+        from config.user import SUPERVISORS as LEGACY_SUPERVISORS  # type: ignore
+    except Exception:
+        LEGACY_SUPERVISORS = {}
+    for name, phone in LEGACY_SUPERVISORS.items():
+        if "filete" in str(name).casefold():
+            _push_phone(phone)
+
     return phones
 
 
