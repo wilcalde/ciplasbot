@@ -93,6 +93,11 @@ def _send_reports_to_recipients(phones: set[str], pdf_path: str, caption: str) -
         send_whatsapp_document(phone, pdf_path, caption=caption)
 
 
+def _send_followup_notice(phones: set[str], message: str) -> None:
+    for phone in phones:
+        send_whatsapp_message(phone, message)
+
+
 def _cleanup_paths(paths: list[str]) -> None:
     for p in paths:
         try:
@@ -207,6 +212,7 @@ def handle_fileteado_efficiency_request(phone_key: str, text: str) -> bool:
             "supervisor_name": supervisor_name,
             "supervisor_phones": sorted(supervisor_phones),
             "pending_paths": temp_paths,
+            "rango_texto": f"{start.isoformat()} a {end.isoformat()}",
         }
         supervisor_phone_display = " / ".join(sorted(supervisor_phones)) if supervisor_phones else "N/D"
         send_whatsapp_message(
@@ -226,6 +232,12 @@ def handle_fileteado_efficiency_request(phone_key: str, text: str) -> bool:
                 for path in pending_paths:
                     if path.lower().endswith(".pdf"):
                         _send_reports_to_recipients(supervisor_phones, path, f"📄 Informe eficiencia – {supervisor_name}")
+                followup = (
+                    "Agente IA CiplasBot ha envio informes de seguimiento de operarios "
+                    f"{state.get('rango_texto', 'Rango de fecha del informe')} del area de fileteado. "
+                    "hacer seguimiento al personal de bajo desempeño."
+                )
+                _send_followup_notice(supervisor_phones, followup)
             send_whatsapp_message(phone_key, f"✅ Informes enviados a {supervisor_name}.")
         else:
             send_whatsapp_message(phone_key, "✅ Listo, no se enviaron informes al supervisor.")
