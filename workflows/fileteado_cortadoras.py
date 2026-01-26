@@ -1,6 +1,7 @@
 # workflows/fileteado_cortadoras.py
 import os
 import re
+import sqlite3
 from io import BytesIO
 from datetime import datetime, date
 
@@ -30,6 +31,7 @@ from services.session_memory import CONFIG_DIR
 # ────────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "tasks", "unified_database_cortadoras_operarios.db")
 
 # Columnas candidatas
 COLS = {
@@ -102,6 +104,182 @@ def _truncate_to_width(pdf: FPDF, text: str, max_w: float) -> str:
     while s and pdf.get_string_width(s + ell) > max_w:
         s = s[:-1]
     return (s + ell) if s else ell
+
+def _connect_sqlite(db_path: str) -> sqlite3.Connection:
+    return sqlite3.connect(db_path)
+
+def _quote_identifier(name: str) -> str:
+    escaped = name.replace('"', '""')
+    return f"\"{escaped}\""
+
+def _inspect_sqlite_tables(conn: sqlite3.Connection) -> list[str]:
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    return [r[0] for r in cur.fetchall()]
+
+def _get_table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    cur = conn.execute(f"PRAGMA table_info({_quote_identifier(table)});")
+    return [r[1] for r in cur.fetchall()]
+
+def _month_window_bounds(end: date, months: int = 5) -> tuple[date, date, list[pd.Period]]:
+    end_period = pd.Period(end, freq="M")
+    start_period = end_period - (months - 1)
+    periods = list(pd.period_range(start=start_period, end=end_period, freq="M"))
+    start_date = start_period.to_timestamp(how="start").date()
+    end_date = end_period.to_timestamp(how="end").date()
+    return start_date, end_date, periods
+
+def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
+    operario_candidates = [
+        "operario",
+        "nombre",
+        "nombre_operario",
+        "apellidos_nombres",
+        "apellidos y nombres",
+        "operador",
+        "empleado",
+    ]
+    fecha_candidates = ["fecha", "fecha_registro", "fecha_efectiva", "date", "datetime", "timestamp", "mes", "periodo"]
+    eficiencia_candidates = ["eficiencia", "eficiencia_operario", "efficiency", "rendimiento", "productividad", "efic", "efic_",
+                             "%efic", "porcentaje_eficiencia", "porcentaje_efic"]
+    corrstand_candidates = ["corrstand", "corrida_standar", "corrida_estandar", "corrida_standar", "corrida_standard"]
+    tc_candidates = ["tiempo_corrida", "tpo_corrida", "tc", "tiempo_produccion", "tiempo_corrido"]
+    tp_candidates = ["tiempo_perdido", "tpo_perdido", "tp", "tiempo_paro", "tiempo_inactivo"]
+
+    best = None
+    best_score = -1
+    for table in _inspect_sqlite_tables(conn):
+        cols = _get_table_columns(conn, table)
+        if not cols:
+            continue
+        norm_map = {_normalize(c): c for c in cols}
+        c_operario = next((norm_map.get(_normalize(c)) for c in operario_candidates if _normalize(c) in norm_map), None)
+        c_fecha = next((norm_map.get(_normalize(c)) for c in fecha_candidates if _normalize(c) in norm_map), None)
+        c_eff = next((norm_map.get(_normalize(c)) for c in eficiencia_candidates if _normalize(c) in norm_map), None)
+        c_cs = next((norm_map.get(_normalize(c)) for c in corrstand_candidates if _normalize(c) in norm_map), None)
+        c_tc = next((norm_map.get(_normalize(c)) for c in tc_candidates if _normalize(c) in norm_map), None)
+        c_tp = next((norm_map.get(_normalize(c)) for c in tp_candidates if _normalize(c) in norm_map), None)
+
+        has_base = c_operario is not None and c_fecha is not None
+        has_eff = c_eff is not None
+        has_formula = c_cs is not None and c_tc is not None and c_tp is not None
+        if not has_base or not (has_eff or has_formula):
+            continue
+        score = 0
+        score += 2 if has_eff else 0
+        score += 1 if has_formula else 0
+        score += 1 if c_cs is not None else 0
+        score += 1 if c_tc is not None else 0
+        score += 1 if c_tp is not None else 0
+        if score > best_score:
+            best_score = score
+            best = {
+                "table": table,
+                "operario": c_operario,
+                "fecha": c_fecha,
+                "eficiencia": c_eff,
+                "corrstand": c_cs,
+                "tc": c_tc,
+                "tp": c_tp,
+            }
+    return best
+
+def _detect_efficiency_wide_table(conn: sqlite3.Connection) -> dict | None:
+    operario_candidates = [
+        "operario",
+        "nombre",
+        "nombre_operario",
+        "apellidos_nombres",
+        "apellidos y nombres",
+        "operador",
+        "empleado",
+    ]
+    eff_keywords = ("eficiencia", "efic")
+
+    best = None
+    best_score = -1
+    for table in _inspect_sqlite_tables(conn):
+        cols = _get_table_columns(conn, table)
+        if not cols:
+            continue
+        norm_map = {_normalize(c): c for c in cols}
+        c_operario = next((norm_map.get(_normalize(c)) for c in operario_candidates if _normalize(c) in norm_map), None)
+        if not c_operario:
+            continue
+        eff_cols = [c for c in cols if any(k in _normalize(c) for k in eff_keywords)]
+        if len(eff_cols) < 2:
+            continue
+        score = len(eff_cols)
+        if score > best_score:
+            best_score = score
+            best = {"table": table, "operario": c_operario, "eff_cols": eff_cols}
+    return best
+
+def _read_efficiency_history_from_sqlite(end_date: date, months: int = 5) -> pd.DataFrame:
+    if not os.path.exists(OPERARIOS_DB_PATH):
+        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+    start_date, end_date_window, periods = _month_window_bounds(end_date, months=months)
+
+    conn = _connect_sqlite(OPERARIOS_DB_PATH)
+    try:
+        source = _detect_efficiency_source(conn)
+        if source:
+            table = source["table"]
+            c_operario = source["operario"]
+            c_fecha = source["fecha"]
+            c_eff = source["eficiencia"]
+            c_cs = source["corrstand"]
+            c_tc = source["tc"]
+            c_tp = source["tp"]
+            cols = [c_operario, c_fecha]
+            if c_eff:
+                cols.append(c_eff)
+            if c_cs and c_tc and c_tp:
+                cols.extend([c_cs, c_tc, c_tp])
+            query = f"SELECT {', '.join(_quote_identifier(c) for c in cols)} FROM {_quote_identifier(table)}"
+            df = pd.read_sql_query(query, conn)
+            if df.empty:
+                return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+            df[c_fecha] = pd.to_datetime(df[c_fecha], errors="coerce")
+            df = df[(df[c_fecha].dt.date >= start_date) & (df[c_fecha].dt.date <= end_date_window)]
+            if df.empty:
+                return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+            if c_eff and c_eff in df.columns:
+                df["eficiencia_mes"] = pd.to_numeric(df[c_eff], errors="coerce")
+            else:
+                df["eficiencia_mes"] = np.where(
+                    (pd.to_numeric(df[c_tc], errors="coerce").fillna(0) +
+                     pd.to_numeric(df[c_tp], errors="coerce").fillna(0)) > 0,
+                    (pd.to_numeric(df[c_cs], errors="coerce").fillna(0) /
+                     (pd.to_numeric(df[c_tc], errors="coerce").fillna(0) +
+                      pd.to_numeric(df[c_tp], errors="coerce").fillna(0))) * 100.0,
+                    np.nan,
+                )
+            df["Mes"] = df[c_fecha].dt.to_period("M").astype(str)
+            df["Operario"] = df[c_operario].astype(str).str.strip()
+            df = df[["Operario", "Mes", "eficiencia_mes"]]
+            return df.dropna(subset=["Operario", "Mes"])
+
+        wide = _detect_efficiency_wide_table(conn)
+        if wide:
+            table = wide["table"]
+            c_operario = wide["operario"]
+            eff_cols = wide["eff_cols"]
+            cols = [c_operario] + eff_cols
+            query = f"SELECT {', '.join(_quote_identifier(c) for c in cols)} FROM {_quote_identifier(table)}"
+            df = pd.read_sql_query(query, conn)
+            if df.empty:
+                return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+            df = df.melt(id_vars=[c_operario], value_vars=eff_cols, var_name="Mes", value_name="eficiencia_mes")
+            df = df.rename(columns={c_operario: "Operario"})
+            df["Operario"] = df["Operario"].astype(str).str.strip()
+            df["Mes"] = df["Mes"].astype(str)
+            return df.dropna(subset=["Operario", "Mes"])
+    finally:
+        conn.close()
+
+    return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
 
 def _to_num(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce").fillna(0)
@@ -744,7 +922,65 @@ def _prepare_maquina_table_cor(df_prod: pd.DataFrame) -> pd.DataFrame:
     return df_maq
 
 
-def _prepare_operario_table_cor(df_prod: pd.DataFrame) -> pd.DataFrame:
+def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 4):
+    try:
+        df_hist = _read_efficiency_history_from_sqlite(end_date, months=months)
+    except Exception:
+        df_hist = pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+    if df_hist.empty:
+        def _label(_: str) -> str:
+            return "Sin historial"
+        return _label
+
+    _, _, periods = _month_window_bounds(end_date, months=months)
+    period_keys = [str(p) for p in periods]
+    df_hist = df_hist.copy()
+    df_hist["Operario_norm"] = df_hist["Operario"].astype(str).str.strip().str.casefold()
+    df_hist["Mes"] = df_hist["Mes"].astype(str)
+    df_hist = df_hist.groupby(["Operario_norm", "Mes"], as_index=False)["eficiencia_mes"].mean()
+
+    def _label(nombre: str) -> str:
+        op_key = (nombre or "").strip().casefold()
+        sub = df_hist[df_hist["Operario_norm"] == op_key]
+        if sub.empty:
+            return "Sin historial"
+        valores = []
+        for period in period_keys[:-1]:
+            match = sub[sub["Mes"] == period]["eficiencia_mes"]
+            if match.empty:
+                return "Datos insuficientes (<4)"
+            valores.append(float(match.mean()))
+        current_value = current_eff.get(op_key)
+        if current_value is None:
+            return "Datos insuficientes (<4)"
+        valores.append(float(current_value))
+        if len(valores) < months:
+            return "Datos insuficientes (<4)"
+        primeros_prom = sum(valores[:2]) / 2.0
+        ultimos_prom = sum(valores[-2:]) / 2.0
+        diferencia = ultimos_prom - primeros_prom
+        efic_mes = valores[-1]
+        promedio_4 = sum(valores) / len(valores)
+        if diferencia > 0.5:
+            return (
+                f"Mejora (+{diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%, "
+                f"Prom 4m {promedio_4:.1f}%)"
+            )
+        if diferencia < -0.5:
+            return (
+                f"Decreciente ({diferencia:.1f} pp, Efic Mes {efic_mes:.1f}%, "
+                f"Prom 4m {promedio_4:.1f}%)"
+            )
+        return (
+            f"Neutro ({diferencia:+.1f} pp, Efic Mes {efic_mes:.1f}%, "
+            f"Prom 4m {promedio_4:.1f}%)"
+        )
+
+    return _label
+
+
+def _prepare_operario_table_cor(df_prod: pd.DataFrame, end_date: date) -> pd.DataFrame:
     if df_prod is None or df_prod.empty:
         return pd.DataFrame(columns=[
             "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes", "tendencia_label"
@@ -778,7 +1014,15 @@ def _prepare_operario_table_cor(df_prod: pd.DataFrame) -> pd.DataFrame:
     )
     df_ope.replace([np.inf, -np.inf], 0, inplace=True)
     df_ope = df_ope.sort_values(by="%eficiencia_mes", ascending=False)
-    df_ope["tendencia_label"] = "Sin historial"
+
+    eff_map = dict(
+        zip(
+            df_ope["Nombre"].astype(str).str.strip().str.casefold(),
+            df_ope["%eficiencia_mes"].astype(float),
+        )
+    )
+    labeler = _trend_labeler(end_date, eff_map, months=4)
+    df_ope["tendencia_label"] = df_ope["Nombre"].apply(labeler)
     return df_ope
 
 
@@ -918,7 +1162,7 @@ def build_pdf_cortadoras(df_range_filtered: pd.DataFrame, start: date, end: date
     """
     df_filt = _filter_cortadoras_records(df_range_filtered)
     df_maq = _prepare_maquina_table_cor(df_filt)
-    df_ope = _prepare_operario_table_cor(df_filt)
+    df_ope = _prepare_operario_table_cor(df_filt, end)
 
     pdf = ReporteCortadoras(start, end, format="Letter")
     pdf.add_page()
