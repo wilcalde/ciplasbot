@@ -196,6 +196,9 @@ def _resolve_operarios_db_path() -> str | None:
     for path in OPERARIOS_DB_PATHS:
         if os.path.exists(path):
             return path
+    for root, _dirs, files in os.walk(CONFIG_DIR):
+        if OPERARIOS_DB_FILENAME in files:
+            return os.path.join(root, OPERARIOS_DB_FILENAME)
     return None
 
 
