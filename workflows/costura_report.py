@@ -401,4 +401,13 @@ __all__ = [
     "_download_costura_df",
     "_find_col",
     "build_pdf_costura",
+    "handle_costura_message",
 ]
+
+
+def handle_costura_message(_phone_key: str, _text: str) -> bool:
+    """
+    Handler placeholder for costura messages.
+    Actualmente los informes de costura se gestionan via `informe eficiencia`.
+    """
+    return False
