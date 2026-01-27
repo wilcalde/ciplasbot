@@ -50,6 +50,16 @@ def _starts_with_ci(series: pd.Series, prefix: str) -> pd.Series:
     return series.astype(str).str.upper().str.startswith(prefix.upper())
 
 
+def _normalize_machine_name(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    match = re.match(r"^[Aa]\s*(\d+)\s*$", raw)
+    if match:
+        return f"A{match.group(1)}"
+    return raw.upper()
+
+
 def _fmt_int(n) -> str:
     try:
         return f"{int(round(float(n))):,}".replace(",", ".")
@@ -101,7 +111,10 @@ def _prepare_maquina_table(df_prod: pd.DataFrame) -> pd.DataFrame:
             "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
         ])
 
-    df_maq = df_prod.groupby(c_maq).agg({
+    df_group = df_prod.copy()
+    df_group["Maquina_norm"] = df_group[c_maq].astype(str).apply(_normalize_machine_name)
+
+    df_maq = df_group.groupby("Maquina_norm").agg({
         c_qty: "sum",
         c_tc: "sum",
         c_tp: "sum",
