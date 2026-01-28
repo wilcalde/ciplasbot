@@ -230,23 +230,21 @@ def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.
     db_path = _resolve_operarios_db_path()
     if not db_path:
         return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-
-    month_names = {
-        1: "enero",
-        2: "febrero",
-        3: "marzo",
-        4: "abril",
-        5: "mayo",
-        6: "junio",
-        7: "julio",
-        8: "agosto",
-        9: "septiembre",
-        10: "octubre",
-        11: "noviembre",
-        12: "diciembre",
+    month_map = {
+        "enero": 1,
+        "febrero": 2,
+        "marzo": 3,
+        "abril": 4,
+        "mayo": 5,
+        "junio": 6,
+        "julio": 7,
+        "agosto": 8,
+        "septiembre": 9,
+        "setiembre": 9,
+        "octubre": 10,
+        "noviembre": 11,
+        "diciembre": 12,
     }
-    _, _, periods = _month_window_bounds(end_date, months=months)
-    eff_cols = [f"eficiencia_{month_names[p.month]}_{p.year}" for p in periods]
 
     conn = _connect_sqlite(db_path)
     try:
@@ -264,9 +262,24 @@ def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.
         if not (c_nombre and c_area):
             return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
 
-        selected_eff_cols = [norm_map.get(_normalize(c)) for c in eff_cols if norm_map.get(_normalize(c))]
-        if not selected_eff_cols:
+        eff_candidates: list[tuple[pd.Period, str]] = []
+        for col in cols:
+            norm = _normalize(col)
+            if not norm.startswith("eficiencia_"):
+                continue
+            m = re.match(r"^eficiencia_([a-zñ]+)_(\d{4})$", norm)
+            if not m:
+                continue
+            mes_txt = m.group(1)
+            year_txt = m.group(2)
+            if mes_txt not in month_map:
+                continue
+            period = pd.Period(f"{int(year_txt):04d}-{month_map[mes_txt]:02d}", freq="M")
+            eff_candidates.append((period, col))
+        if not eff_candidates:
             return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+        eff_candidates.sort(key=lambda item: item[0])
+        selected_eff_cols = [c for _, c in eff_candidates[-months:]]
 
         query_cols = [c_nombre, c_area, *selected_eff_cols]
         query = f"SELECT {', '.join(_quote_identifier(c) for c in query_cols)} FROM {_quote_identifier(table)}"
