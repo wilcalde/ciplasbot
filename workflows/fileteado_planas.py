@@ -22,8 +22,9 @@ from services.session_memory import CONFIG_DIR
 # ────────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
-OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", "unified_database_planas.db")
-OPERARIOS_DB_FALLBACK = os.path.join(CONFIG_DIR, "tasks", "unified_database_planas.db")
+OPERARIOS_DB_FILENAME = "base_conversion_eficiencias_conversion.db"
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", OPERARIOS_DB_FILENAME)
+OPERARIOS_DB_FALLBACK = os.path.join(CONFIG_DIR, "tasks", OPERARIOS_DB_FILENAME)
 
 COLS = {
     "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
@@ -92,6 +93,9 @@ def _resolve_operarios_db_path() -> str | None:
         return OPERARIOS_DB_PATH
     if os.path.exists(OPERARIOS_DB_FALLBACK):
         return OPERARIOS_DB_FALLBACK
+    for root, _dirs, files in os.walk(CONFIG_DIR):
+        if OPERARIOS_DB_FILENAME in files:
+            return os.path.join(root, OPERARIOS_DB_FILENAME)
     return None
 
 def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
@@ -207,77 +211,64 @@ def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.
     db_path = _resolve_operarios_db_path()
     if not db_path:
         return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+    month_names = {
+        1: "enero",
+        2: "febrero",
+        3: "marzo",
+        4: "abril",
+        5: "mayo",
+        6: "junio",
+        7: "julio",
+        8: "agosto",
+        9: "septiembre",
+        10: "octubre",
+        11: "noviembre",
+        12: "diciembre",
+    }
+    _, _, periods = _month_window_bounds(end_date, months=months)
+    eff_cols = [f"eficiencia_{month_names[p.month]}_{p.year}" for p in periods]
+
     conn = _connect_sqlite(db_path)
     try:
-        source = _detect_efficiency_source(conn)
-        if source:
-            cols = [source["operario"], source["fecha"], source["eficiencia"]]
-            cols_sql = ", ".join(_quote_identifier(c) for c in cols if c)
-            df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(source['table'])}", conn)
-        else:
-            wide = _detect_efficiency_wide_table(conn)
-            if not wide:
-                return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-            cols_sql = ", ".join(_quote_identifier(c) for c in [wide["operario"], *wide["eff_cols"]])
-            df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(wide['table'])}", conn)
+        tables = _inspect_sqlite_tables(conn)
+        if not tables:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+        table = tables[0]
+        cols = _get_table_columns(conn, table)
+        if not cols:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        norm_map = {_normalize(c): c for c in cols}
+        c_nombre = norm_map.get("nombre")
+        c_area = norm_map.get("area")
+        if not (c_nombre and c_area):
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        selected_eff_cols = [norm_map.get(_normalize(c)) for c in eff_cols if norm_map.get(_normalize(c))]
+        if not selected_eff_cols:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        query_cols = [c_nombre, c_area, *selected_eff_cols]
+        query = f"SELECT {', '.join(_quote_identifier(c) for c in query_cols)} FROM {_quote_identifier(table)}"
+        df = pd.read_sql_query(query, conn)
+        if df.empty:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        df[c_area] = df[c_area].astype(str).str.strip().str.casefold()
+        df = df[df[c_area] == "fileteado"]
+        if df.empty:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        df = df.rename(columns={c_nombre: "Operario"})
+        df["Operario"] = df["Operario"].astype(str).str.strip()
+        melt_df = df.melt(id_vars=["Operario"], value_vars=selected_eff_cols,
+                          var_name="Mes", value_name="eficiencia_mes")
+        melt_df["Mes"] = melt_df["Mes"].astype(str)
+        melt_df["eficiencia_mes"] = pd.to_numeric(melt_df["eficiencia_mes"], errors="coerce")
+        return melt_df.dropna(subset=["Operario", "Mes"])
     finally:
         conn.close()
-
-    if source is None:
-        df = df.rename(columns={wide["operario"]: "Operario"})
-        df["Operario"] = df["Operario"].astype(str).str.strip()
-        long_rows = []
-        for col in wide["eff_cols"]:
-            period = _parse_month_label(col)
-            if period is None:
-                continue
-            series = pd.to_numeric(df[col], errors="coerce")
-            for operario, value in zip(df["Operario"], series):
-                if pd.isna(value):
-                    continue
-                long_rows.append({
-                    "Operario": operario,
-                    "Mes": period,
-                    "eficiencia_mes": float(value) * 100.0 if value <= 1.5 else float(value),
-                })
-        if not long_rows:
-            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-        df_long = pd.DataFrame(long_rows)
-        _, _, periods = _month_window_bounds(end_date, months=months)
-        df_long = df_long[df_long["Mes"].isin(periods)]
-        df_long["Mes"] = df_long["Mes"].astype(str)
-        return df_long
-
-    rename_map = {
-        source["operario"]: "Operario",
-        source["fecha"]: "Fecha",
-        source["eficiencia"]: "Eficiencia",
-    }
-    df = df.rename(columns=rename_map)
-    df["Operario"] = df["Operario"].astype(str).str.strip()
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-    df = df.dropna(subset=["Operario", "Fecha", "Eficiencia"])
-    start_date, end_date, periods = _month_window_bounds(end_date, months=months)
-    df = df[(df["Fecha"].dt.date >= start_date) & (df["Fecha"].dt.date <= end_date)]
-    if df.empty:
-        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-    df["Eficiencia"] = pd.to_numeric(df["Eficiencia"], errors="coerce")
-    df = df.dropna(subset=["Eficiencia"])
-    if df.empty:
-        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-    max_eff = df["Eficiencia"].max()
-    if max_eff <= 1.5:
-        df["Eficiencia"] = df["Eficiencia"] * 100.0
-    df["Mes"] = df["Fecha"].dt.to_period("M")
-    df = df[df["Mes"].isin(periods)]
-    if df.empty:
-        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-    grouped = df.groupby(["Operario", "Mes"], as_index=False)["Eficiencia"].mean()
-    grouped = grouped.rename(columns={"Eficiencia": "eficiencia_mes"})
-    grouped["Mes"] = grouped["Mes"].astype(str)
-    grouped["eficiencia_mes"] = pd.to_numeric(grouped["eficiencia_mes"], errors="coerce")
-    grouped = grouped.dropna(subset=["eficiencia_mes"])
-    return grouped
 
 def _trend_labeler(end_date: date, months: int = 4):
     df_hist = _read_efficiency_history_from_sqlite(end_date, months=months)

@@ -23,7 +23,9 @@ from services.session_memory import CONFIG_DIR
 # ────────────────────────────────────────────────────────────────────────────────
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
-OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "tasks", "operarios_leno_tubular.db")
+OPERARIOS_DB_FILENAME = "base_conversion_eficiencias_conversion.db"
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", OPERARIOS_DB_FILENAME)
+OPERARIOS_DB_FALLBACK = os.path.join(CONFIG_DIR, "tasks", OPERARIOS_DB_FILENAME)
 
 COLS = {
     "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
@@ -117,6 +119,16 @@ def _truncate_to_width(pdf: FPDF, text: str, max_w: float) -> str:
 
 def _connect_sqlite(db_path: str) -> sqlite3.Connection:
     return sqlite3.connect(db_path)
+
+def _resolve_operarios_db_path() -> str | None:
+    if os.path.exists(OPERARIOS_DB_PATH):
+        return OPERARIOS_DB_PATH
+    if os.path.exists(OPERARIOS_DB_FALLBACK):
+        return OPERARIOS_DB_FALLBACK
+    for root, _dirs, files in os.walk(CONFIG_DIR):
+        if OPERARIOS_DB_FILENAME in files:
+            return os.path.join(root, OPERARIOS_DB_FILENAME)
+    return None
 
 def _quote_identifier(name: str) -> str:
     escaped = name.replace('"', '""')
@@ -255,126 +267,68 @@ def _parse_month_label(label: str) -> pd.Period | None:
     month = month_map[mes_txt]
     return pd.Period(f"{year:04d}-{month:02d}", freq="M")
 
-def _read_efficiency_history_from_sqlite(end_date: date, months: int = 5) -> pd.DataFrame:
-    if not os.path.exists(OPERARIOS_DB_PATH):
-        raise FileNotFoundError(f"No existe el archivo {OPERARIOS_DB_PATH}")
-    conn = _connect_sqlite(OPERARIOS_DB_PATH)
+def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.DataFrame:
+    db_path = _resolve_operarios_db_path()
+    if not db_path:
+        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+    month_names = {
+        1: "enero",
+        2: "febrero",
+        3: "marzo",
+        4: "abril",
+        5: "mayo",
+        6: "junio",
+        7: "julio",
+        8: "agosto",
+        9: "septiembre",
+        10: "octubre",
+        11: "noviembre",
+        12: "diciembre",
+    }
+    _, _, periods = _month_window_bounds(end_date, months=months)
+    eff_cols = [f"eficiencia_{month_names[p.month]}_{p.year}" for p in periods]
+
+    conn = _connect_sqlite(db_path)
     try:
-        source = _detect_efficiency_source(conn)
-        if source:
-            cols = [source["operario"], source["fecha"]]
-            if source["eficiencia"]:
-                cols.append(source["eficiencia"])
-            if source["corrstand"]:
-                cols.append(source["corrstand"])
-            if source["tc"]:
-                cols.append(source["tc"])
-            if source["tp"]:
-                cols.append(source["tp"])
-            cols_sql = ", ".join(_quote_identifier(c) for c in cols if c)
-            df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(source['table'])}", conn)
-        else:
-            wide = _detect_efficiency_wide_table(conn)
-            if not wide:
-                raise RuntimeError("No se detectaron tablas/columnas con eficiencia.")
-            cols_sql = ", ".join(_quote_identifier(c) for c in [wide["operario"], *wide["eff_cols"]])
-            df = pd.read_sql_query(f"SELECT {cols_sql} FROM {_quote_identifier(wide['table'])}", conn)
+        tables = _inspect_sqlite_tables(conn)
+        if not tables:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+        table = tables[0]
+        cols = _get_table_columns(conn, table)
+        if not cols:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        norm_map = {_normalize(c): c for c in cols}
+        c_nombre = norm_map.get("nombre")
+        c_area = norm_map.get("area")
+        if not (c_nombre and c_area):
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        selected_eff_cols = [norm_map.get(_normalize(c)) for c in eff_cols if norm_map.get(_normalize(c))]
+        if not selected_eff_cols:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        query_cols = [c_nombre, c_area, *selected_eff_cols]
+        query = f"SELECT {', '.join(_quote_identifier(c) for c in query_cols)} FROM {_quote_identifier(table)}"
+        df = pd.read_sql_query(query, conn)
+        if df.empty:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        df[c_area] = df[c_area].astype(str).str.strip().str.casefold()
+        df = df[df[c_area] == "fileteado"]
+        if df.empty:
+            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
+
+        df = df.rename(columns={c_nombre: "Operario"})
+        df["Operario"] = df["Operario"].astype(str).str.strip()
+        melt_df = df.melt(id_vars=["Operario"], value_vars=selected_eff_cols,
+                          var_name="Mes", value_name="eficiencia_mes")
+        melt_df["Mes"] = melt_df["Mes"].astype(str)
+        melt_df["eficiencia_mes"] = pd.to_numeric(melt_df["eficiencia_mes"], errors="coerce")
+        return melt_df.dropna(subset=["Operario", "Mes"])
     finally:
         conn.close()
-
-    if source is None:
-        df = df.rename(columns={wide["operario"]: "Operario"})
-        df["Operario"] = df["Operario"].astype(str).str.strip()
-        long_rows = []
-        for col in wide["eff_cols"]:
-            period = _parse_month_label(col)
-            if period is None:
-                continue
-            series = pd.to_numeric(df[col], errors="coerce")
-            for operario, value in zip(df["Operario"], series):
-                if pd.isna(value):
-                    continue
-                long_rows.append({
-                    "Operario": operario,
-                    "Mes": period,
-                    "eficiencia_mes": float(value) * 100.0 if value <= 1.5 else float(value),
-                })
-        if not long_rows:
-            return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-        df_long = pd.DataFrame(long_rows)
-        start_date, end_date, periods = _month_window_bounds(end_date, months=months)
-        df_long = df_long[df_long["Mes"].isin(periods)]
-        df_long["Mes"] = df_long["Mes"].astype(str)
-        return df_long
-
-    rename_map = {
-        source["operario"]: "Operario",
-        source["fecha"]: "Fecha",
-    }
-    if source["eficiencia"]:
-        rename_map[source["eficiencia"]] = "Eficiencia"
-    if source["corrstand"]:
-        rename_map[source["corrstand"]] = "Corrstand"
-    if source["tc"]:
-        rename_map[source["tc"]] = "Tiempo_Corrida"
-    if source["tp"]:
-        rename_map[source["tp"]] = "Tiempo_Perdido"
-    df = df.rename(columns=rename_map)
-
-    df["Operario"] = df["Operario"].astype(str).str.strip()
-    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-    df = df.dropna(subset=["Operario", "Fecha"])
-
-    start_date, end_date, periods = _month_window_bounds(end_date, months=months)
-    df = df[(df["Fecha"].dt.date >= start_date) & (df["Fecha"].dt.date <= end_date)]
-    if df.empty:
-        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-
-    if "Eficiencia" in df.columns:
-        df["Eficiencia"] = pd.to_numeric(df["Eficiencia"], errors="coerce")
-        df = df.dropna(subset=["Eficiencia"])
-        if not df.empty:
-            max_eff = df["Eficiencia"].max()
-            if max_eff <= 1.5:
-                df["Eficiencia"] = df["Eficiencia"] * 100.0
-    else:
-        for col in ["Corrstand", "Tiempo_Corrida", "Tiempo_Perdido"]:
-            if col not in df.columns:
-                raise RuntimeError("No se encontraron campos para calcular eficiencia.")
-        df["Corrstand"] = pd.to_numeric(df["Corrstand"], errors="coerce").fillna(0.0)
-        df["Tiempo_Corrida"] = pd.to_numeric(df["Tiempo_Corrida"], errors="coerce").fillna(0.0)
-        df["Tiempo_Perdido"] = pd.to_numeric(df["Tiempo_Perdido"], errors="coerce").fillna(0.0)
-        denom = df["Tiempo_Corrida"] + df["Tiempo_Perdido"]
-        df = df[denom > 0]
-        df["Eficiencia"] = (df["Corrstand"] / denom) * 100.0
-
-    if df.empty:
-        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-
-    df["Mes"] = df["Fecha"].dt.to_period("M")
-    df = df[df["Mes"].isin(periods)]
-
-    if df.empty:
-        return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-
-    weight_cols = ("Tiempo_Corrida", "Tiempo_Perdido")
-    has_weights = all(c in df.columns for c in weight_cols)
-    if has_weights:
-        df["Peso"] = pd.to_numeric(df["Tiempo_Corrida"], errors="coerce").fillna(0.0) + \
-            pd.to_numeric(df["Tiempo_Perdido"], errors="coerce").fillna(0.0)
-        df = df[df["Peso"] > 0]
-        grouped = df.groupby(["Operario", "Mes"], as_index=False).apply(
-            lambda g: pd.Series({"eficiencia_mes": np.average(g["Eficiencia"], weights=g["Peso"])})
-        )
-        grouped = grouped.reset_index(drop=True)
-    else:
-        grouped = df.groupby(["Operario", "Mes"], as_index=False)["Eficiencia"].mean()
-        grouped = grouped.rename(columns={"Eficiencia": "eficiencia_mes"})
-
-    grouped["Mes"] = grouped["Mes"].astype(str)
-    grouped["eficiencia_mes"] = pd.to_numeric(grouped["eficiencia_mes"], errors="coerce")
-    grouped = grouped.dropna(subset=["eficiencia_mes"])
-    return grouped
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Subset LENO (en orden)
