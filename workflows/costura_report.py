@@ -411,11 +411,13 @@ def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 
         primeros_prom = sum(valores[:2]) / 2.0
         ultimos_prom = sum(valores[-2:]) / 2.0
         diferencia = ultimos_prom - primeros_prom
-        efic_mes = valores[-1]
-        promedio_4 = sum(valores) / len(valores)
-        ult_3m = valores[-3:]
-        ult_3m_txt = ",".join(f"{v:.0f}" for v in ult_3m)
-        base = f"efic_ult_3m ({ult_3m_txt})_prom(4m)={promedio_4:.0f}"
+        max_val = max(valores) if valores else 0.0
+        scale = 100.0 if max_val <= 1.5 else 1.0
+        valores_pct = [v * scale for v in valores]
+        promedio_4 = sum(valores_pct) / len(valores_pct)
+        ult_3m = valores_pct[-3:]
+        ult_3m_txt = ",".join(f"{v:.1f}" for v in ult_3m)
+        base = f"efic_ult_3m ({ult_3m_txt})_prom(4m)={promedio_4:.1f}"
         if diferencia > 0.5:
             return f"{base}_ Mejora"
         if diferencia < -0.5:
