@@ -273,7 +273,8 @@ def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.
         df["Operario"] = df["Operario"].astype(str).str.strip()
         melt_df = df.melt(id_vars=["Operario"], value_vars=selected_eff_cols,
                           var_name="Mes", value_name="eficiencia_mes")
-        melt_df["Mes"] = melt_df["Mes"].astype(str)
+        period_map = {col: period for period, col in eff_candidates}
+        melt_df["Mes"] = melt_df["Mes"].map(period_map).astype(str)
         melt_df["eficiencia_mes"] = pd.to_numeric(melt_df["eficiencia_mes"], errors="coerce")
         return melt_df.dropna(subset=["Operario", "Mes"])
     finally:
@@ -364,6 +365,20 @@ def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 
 
     _, _, periods = _month_window_bounds(end_date, months=months)
     period_keys = [str(p) for p in periods]
+    month_labels = {
+        1: "enero",
+        2: "febrero",
+        3: "marzo",
+        4: "abril",
+        5: "mayo",
+        6: "junio",
+        7: "julio",
+        8: "agosto",
+        9: "septiembre",
+        10: "octubre",
+        11: "noviembre",
+        12: "diciembre",
+    }
     df_hist = df_hist.copy()
     df_hist["Operario_norm"] = df_hist["Operario"].astype(str).str.strip().str.casefold()
     df_hist["Mes"] = df_hist["Mes"].astype(str)
@@ -375,17 +390,24 @@ def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 
         if sub.empty:
             return "Sin historial"
         valores = []
+        missing = []
         for period in period_keys[:-1]:
             match = sub[sub["Mes"] == period]["eficiencia_mes"]
             if match.empty:
-                return "Datos insuficientes (<4)"
+                try:
+                    p = pd.Period(period, freq="M")
+                    missing.append(f"{month_labels.get(p.month, p.month)}-{p.year}")
+                except Exception:
+                    missing.append(period)
+                continue
             valores.append(float(match.mean()))
         current_value = current_eff.get(op_key)
         if current_value is None:
-            return "Datos insuficientes (<4)"
+            missing.append("mes actual")
         valores.append(float(current_value))
         if len(valores) < months:
-            return "Datos insuficientes (<4)"
+            extra = f" Faltan: {', '.join(missing)}" if missing else ""
+            return f"Datos insuficientes (<4).{extra}"
         primeros_prom = sum(valores[:2]) / 2.0
         ultimos_prom = sum(valores[-2:]) / 2.0
         diferencia = ultimos_prom - primeros_prom
