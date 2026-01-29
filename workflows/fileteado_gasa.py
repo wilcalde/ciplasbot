@@ -1,30 +1,23 @@
-# workflows/costura_report.py
+# workflows/fileteado_gasa.py
 import os
 import re
 import sqlite3
-from datetime import datetime, date
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
-
 from fpdf import FPDF
 
 from services.session_memory import CONFIG_DIR
 
 REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
-
-COSTURA_DATA_URL = (
-    "https://docs.google.com/spreadsheets/d/1V-9iIVMLf19vuQIoiu53t6k2J2vlu49vUjEMnKS5bLY/export?format=xlsx"
-)
 OPERARIOS_DB_FILENAME = "base_conversion_eficiencias_conversion.db"
-OPERARIOS_DB_PATHS = (
-    os.path.join(CONFIG_DIR, "task", OPERARIOS_DB_FILENAME),
-    os.path.join(CONFIG_DIR, "tasks", OPERARIOS_DB_FILENAME),
-)
+OPERARIOS_DB_PATH = os.path.join(CONFIG_DIR, "task", OPERARIOS_DB_FILENAME)
+OPERARIOS_DB_FALLBACK = os.path.join(CONFIG_DIR, "tasks", OPERARIOS_DB_FILENAME)
 
 COLS = {
-    "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
+    "articulo": ["Numero_Articulo", "numero_articulo", "Articulo", "articulo", "Numero de articulo"],
     "maquina": ["Maquina", "Máquina", "maquina", "máquina", "Equipo", "equipo"],
     "cantidad": ["Cantidad_Completada", "cantidad_completada", "Cantidad", "cantidad"],
     "tc": ["Tiempo_Corrida", "tiempo_corrida", "tpo_corrida", "tpo_cda"],
@@ -56,16 +49,6 @@ def _starts_with_ci(series: pd.Series, prefix: str) -> pd.Series:
     return series.astype(str).str.upper().str.startswith(prefix.upper())
 
 
-def _normalize_machine_name(value: str) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    match = re.match(r"^[Aa]\s*(\d+)\s*$", raw)
-    if match:
-        return f"A{match.group(1)}"
-    return raw.upper()
-
-
 def _connect_sqlite(db_path: str) -> sqlite3.Connection:
     return sqlite3.connect(db_path)
 
@@ -94,6 +77,17 @@ def _month_window_bounds(end: date, months: int = 4) -> tuple[date, date, list[p
     return start_date, end_date, periods
 
 
+def _resolve_operarios_db_path() -> str | None:
+    if os.path.exists(OPERARIOS_DB_PATH):
+        return OPERARIOS_DB_PATH
+    if os.path.exists(OPERARIOS_DB_FALLBACK):
+        return OPERARIOS_DB_FALLBACK
+    for root, _dirs, files in os.walk(CONFIG_DIR):
+        if OPERARIOS_DB_FILENAME in files:
+            return os.path.join(root, OPERARIOS_DB_FILENAME)
+    return None
+
+
 def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
     operario_candidates = [
         "operario",
@@ -117,9 +111,6 @@ def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
         "porcentaje_eficiencia",
         "porcentaje_efic",
     ]
-    corrstand_candidates = ["corrstand", "corrida_standar", "corrida_estandar", "corrida_standar", "corrida_standard"]
-    tc_candidates = ["tiempo_corrida", "tpo_corrida", "tc", "tiempo_produccion", "tiempo_corrido"]
-    tp_candidates = ["tiempo_perdido", "tpo_perdido", "tp", "tiempo_paro", "tiempo_inactivo"]
 
     best = None
     best_score = -1
@@ -131,21 +122,9 @@ def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
         c_operario = next((norm_map.get(_normalize(c)) for c in operario_candidates if _normalize(c) in norm_map), None)
         c_fecha = next((norm_map.get(_normalize(c)) for c in fecha_candidates if _normalize(c) in norm_map), None)
         c_eff = next((norm_map.get(_normalize(c)) for c in eficiencia_candidates if _normalize(c) in norm_map), None)
-        c_cs = next((norm_map.get(_normalize(c)) for c in corrstand_candidates if _normalize(c) in norm_map), None)
-        c_tc = next((norm_map.get(_normalize(c)) for c in tc_candidates if _normalize(c) in norm_map), None)
-        c_tp = next((norm_map.get(_normalize(c)) for c in tp_candidates if _normalize(c) in norm_map), None)
-
-        has_base = c_operario is not None and c_fecha is not None
-        has_eff = c_eff is not None
-        has_formula = c_cs is not None and c_tc is not None and c_tp is not None
-        if not has_base or not (has_eff or has_formula):
+        if not (c_operario and c_fecha and c_eff):
             continue
-        score = 0
-        score += 2 if has_eff else 0
-        score += 1 if has_formula else 0
-        score += 1 if c_cs is not None else 0
-        score += 1 if c_tc is not None else 0
-        score += 1 if c_tp is not None else 0
+        score = 1
         if score > best_score:
             best_score = score
             best = {
@@ -153,9 +132,6 @@ def _detect_efficiency_source(conn: sqlite3.Connection) -> dict | None:
                 "operario": c_operario,
                 "fecha": c_fecha,
                 "eficiencia": c_eff,
-                "corrstand": c_cs,
-                "tc": c_tc,
-                "tp": c_tp,
             }
     return best
 
@@ -192,14 +168,36 @@ def _detect_efficiency_wide_table(conn: sqlite3.Connection) -> dict | None:
     return best
 
 
-def _resolve_operarios_db_path() -> str | None:
-    for path in OPERARIOS_DB_PATHS:
-        if os.path.exists(path):
-            return path
-    for root, _dirs, files in os.walk(CONFIG_DIR):
-        if OPERARIOS_DB_FILENAME in files:
-            return os.path.join(root, OPERARIOS_DB_FILENAME)
-    return None
+def _parse_month_label(label: str) -> pd.Period | None:
+    if not label:
+        return None
+    text = label.strip().lower()
+    month_map = {
+        "enero": 1, "ene": 1,
+        "febrero": 2, "feb": 2,
+        "marzo": 3, "mar": 3,
+        "abril": 4, "abr": 4,
+        "mayo": 5, "may": 5,
+        "junio": 6, "jun": 6,
+        "julio": 7, "jul": 7,
+        "agosto": 8, "ago": 8, "aug": 8,
+        "septiembre": 9, "setiembre": 9, "sep": 9, "sept": 9,
+        "octubre": 10, "oct": 10,
+        "noviembre": 11, "nov": 11,
+        "diciembre": 12, "dic": 12, "dec": 12,
+    }
+    m = re.search(r"([a-zñ]+)[\\s_-]*([0-9]{2,4})", text)
+    if not m:
+        return None
+    mes_txt = m.group(1)
+    year_txt = m.group(2)
+    if mes_txt not in month_map:
+        return None
+    year = int(year_txt)
+    if year < 100:
+        year += 2000
+    month = month_map[mes_txt]
+    return pd.Period(f"{year:04d}-{month:02d}", freq="M")
 
 
 def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.DataFrame:
@@ -264,100 +262,23 @@ def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.
             return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
 
         df[c_area] = df[c_area].astype(str).str.strip().str.casefold()
-        df = df[df[c_area] == "botheven"]
+        df = df[df[c_area] == "fileteado"]
         if df.empty:
             return pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
 
-        rename_map = {c_nombre: "Operario"}
-        df = df.rename(columns=rename_map)
+        df = df.rename(columns={c_nombre: "Operario"})
         df["Operario"] = df["Operario"].astype(str).str.strip()
         melt_df = df.melt(id_vars=["Operario"], value_vars=selected_eff_cols,
                           var_name="Mes", value_name="eficiencia_mes")
-        period_map = {col: period for period, col in eff_candidates}
-        melt_df["Mes"] = melt_df["Mes"].map(period_map).astype(str)
+        melt_df["Mes"] = melt_df["Mes"].astype(str)
         melt_df["eficiencia_mes"] = pd.to_numeric(melt_df["eficiencia_mes"], errors="coerce")
         return melt_df.dropna(subset=["Operario", "Mes"])
     finally:
         conn.close()
 
-def _fmt_int(n) -> str:
-    try:
-        return f"{int(round(float(n))):,}".replace(",", ".")
-    except Exception:
-        return "0"
 
-
-def _fmt_float(n, d=2) -> str:
-    try:
-        return f"{float(n):,.{d}f}".replace(",", "_").replace(".", ",").replace("_", ".")
-    except Exception:
-        return "0"
-
-
-def _sanitize_pdf_text(s: str) -> str:
-    if not s:
-        return ""
-    repl = {"•": "-", "–": "-", "—": "-", "―": "-", "“": '"', "”": '"', "‘": "'", "’": "'", "\u00A0": " "}
-    for k, v in repl.items():
-        s = s.replace(k, v)
-    return s.encode("latin-1", "ignore").decode("latin-1")
-
-
-def _download_costura_df() -> pd.DataFrame:
-    return pd.read_excel(COSTURA_DATA_URL)
-
-
-def _filter_costura_records(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    c_maq = _find_col(df, COLS["maquina"])
-    if not c_maq:
-        return pd.DataFrame()
-    return df.loc[_starts_with_ci(df[c_maq], "A")].copy()
-
-
-def _prepare_maquina_table(df_prod: pd.DataFrame) -> pd.DataFrame:
-    if df_prod is None or df_prod.empty:
-        return pd.DataFrame(columns=[
-            "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
-        ])
-    c_maq = _find_col(df_prod, COLS["maquina"])
-    c_qty = _find_col(df_prod, COLS["cantidad"])
-    c_tc = _find_col(df_prod, COLS["tc"])
-    c_tp = _find_col(df_prod, COLS["tp"])
-    c_cs = _find_col(df_prod, COLS["cs"])
-    if not (c_maq and c_qty and c_tc and c_tp and c_cs):
-        return pd.DataFrame(columns=[
-            "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
-        ])
-
-    df_group = df_prod.copy()
-    df_group["Maquina_norm"] = df_group[c_maq].astype(str).apply(_normalize_machine_name)
-
-    df_maq = df_group.groupby("Maquina_norm").agg({
-        c_qty: "sum",
-        c_tc: "sum",
-        c_tp: "sum",
-        c_cs: "sum",
-    }).reset_index()
-    df_maq.columns = ["Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar"]
-
-    for col in ["produccion", "t_corrida", "T.perd", "cor.estandar"]:
-        df_maq[col] = pd.to_numeric(df_maq[col], errors="coerce").fillna(0.0)
-
-    denom_prod = df_maq["t_corrida"] + df_maq["T.perd"]
-    df_maq["%productividad"] = np.where(denom_prod > 0, (df_maq["cor.estandar"] / denom_prod) * 100, 0.0)
-    df_maq["%eficiencia"] = np.where(df_maq["t_corrida"] > 0, (df_maq["cor.estandar"] / df_maq["t_corrida"]) * 100, 0.0)
-    df_maq.replace([np.inf, -np.inf], 0, inplace=True)
-    return df_maq
-
-
-def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 4):
-    try:
-        df_hist = _read_efficiency_history_from_sqlite(end_date, months=months)
-    except Exception:
-        df_hist = pd.DataFrame(columns=["Operario", "Mes", "eficiencia_mes"])
-
+def _trend_labeler(end_date: date, months: int = 4):
+    df_hist = _read_efficiency_history_from_sqlite(end_date, months=months)
     if df_hist.empty:
         def _label(_: str) -> str:
             return "Sin historial"
@@ -365,20 +286,6 @@ def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 
 
     _, _, periods = _month_window_bounds(end_date, months=months)
     period_keys = [str(p) for p in periods]
-    month_labels = {
-        1: "enero",
-        2: "febrero",
-        3: "marzo",
-        4: "abril",
-        5: "mayo",
-        6: "junio",
-        7: "julio",
-        8: "agosto",
-        9: "septiembre",
-        10: "octubre",
-        11: "noviembre",
-        12: "diciembre",
-    }
     df_hist = df_hist.copy()
     df_hist["Operario_norm"] = df_hist["Operario"].astype(str).str.strip().str.casefold()
     df_hist["Mes"] = df_hist["Mes"].astype(str)
@@ -390,168 +297,27 @@ def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 
         if sub.empty:
             return "Sin historial"
         valores = []
-        missing = []
-        for period in period_keys[:-1]:
+        for period in period_keys:
             match = sub[sub["Mes"] == period]["eficiencia_mes"]
             if match.empty:
-                try:
-                    p = pd.Period(period, freq="M")
-                    missing.append(f"{month_labels.get(p.month, p.month)}-{p.year}")
-                except Exception:
-                    missing.append(period)
-                continue
+                return "Datos insuficientes (<4)"
             valores.append(float(match.mean()))
-        current_value = current_eff.get(op_key)
-        if current_value is None:
-            missing.append("mes actual")
-        valores.append(float(current_value))
         if len(valores) < months:
-            extra = f" Faltan: {', '.join(missing)}" if missing else ""
-            return f"Datos insuficientes (<4).{extra}"
+            return "Datos insuficientes (<4)"
         primeros_prom = sum(valores[:2]) / 2.0
         ultimos_prom = sum(valores[-2:]) / 2.0
         diferencia = ultimos_prom - primeros_prom
-        efic_mes = valores[-1]
         promedio_4 = sum(valores) / len(valores)
-        ult_3m = valores[-3:]
-        ult_3m_txt = ",".join(f"{v:.0f}" for v in ult_3m)
-        base = f"efic_ult_3m ({ult_3m_txt})_prom(4m)={promedio_4:.0f}"
         if diferencia > 0.5:
-            return f"{base}_ Mejora"
+            return f"Mejora (+{diferencia:.1f} pp, Prom 4m {promedio_4:.1f}%)"
         if diferencia < -0.5:
-            return f"{base}_ Decreciente"
-        return f"{base}_ Neutro"
+            return f"Decreciente ({diferencia:.1f} pp, Prom 4m {promedio_4:.1f}%)"
+        return f"Neutro ({diferencia:+.1f} pp, Prom 4m {promedio_4:.1f}%)"
 
     return _label
 
 
-def _prepare_operario_table(df_prod: pd.DataFrame, end_date: date) -> pd.DataFrame:
-    if df_prod is None or df_prod.empty:
-        return pd.DataFrame(columns=[
-            "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes", "tendencia_label"
-        ])
-    c_op = _find_col(df_prod, COLS["operario"])
-    c_qty = _find_col(df_prod, COLS["cantidad"])
-    c_tc = _find_col(df_prod, COLS["tc"])
-    c_tp = _find_col(df_prod, COLS["tp"])
-    c_cs = _find_col(df_prod, COLS["cs"])
-    if not (c_op and c_tc and c_tp and c_cs):
-        return pd.DataFrame(columns=[
-            "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes", "tendencia_label"
-        ])
-
-    agg_map = {c_tc: "sum", c_tp: "sum", c_cs: "sum"}
-    if c_qty:
-        agg_map[c_qty] = "sum"
-    df_ope = df_prod.groupby(c_op).agg(agg_map).reset_index()
-    columns = ["Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar"]
-    if c_qty:
-        columns.append("Produccion")
-    df_ope.columns = columns
-    if "Produccion" not in df_ope.columns:
-        df_ope["Produccion"] = 0.0
-    for col in ["Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar"]:
-        df_ope[col] = pd.to_numeric(df_ope[col], errors="coerce").fillna(0.0)
-    df_ope["%eficiencia_mes"] = np.where(
-        df_ope["Tiempo_corrida"] > 0,
-        (df_ope["Cor.estandar"] / df_ope["Tiempo_corrida"]) * 100,
-        0.0,
-    )
-    df_ope.replace([np.inf, -np.inf], 0, inplace=True)
-    df_ope = df_ope.sort_values(by="%eficiencia_mes", ascending=False)
-    eff_map = dict(
-        zip(
-            df_ope["Nombre"].astype(str).str.strip().str.casefold(),
-            df_ope["%eficiencia_mes"].astype(float),
-        )
-    )
-    labeler = _trend_labeler(end_date, eff_map, months=4)
-    df_ope["tendencia_label"] = df_ope["Nombre"].apply(labeler)
-    return df_ope
-
-
-def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: float) -> None:
-    diff_causas = eficiencia_total - prod_total
-    restante = 80.0 - eficiencia_total
-    pdf.ln(4)
-    pdf.set_x(pdf.l_margin)
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(0, 100, 0)
-    pdf.cell(0, 6, _sanitize_pdf_text("Objetivo de productividad 80%."), 0, 1, "L")
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Arial", "B", 9)
-    pdf.set_text_color(150, 0, 0)
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(
-        0,
-        5,
-        _sanitize_pdf_text(
-            "Las causas de tiempo perdido corresponden a "
-            f"{diff_causas:.1f} puntos de productividad."
-        ),
-    )
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Arial", "B", 9)
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_x(pdf.l_margin)
-    pdf.multi_cell(
-        0,
-        5,
-        _sanitize_pdf_text(
-            f"El restante {restante:.1f} es por bajo eficiencia del proceso."
-        ),
-    )
-    pdf.set_text_color(0, 0, 0)
-
-
-def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> tuple[float, float]:
-    pdf.ln(4)
-    pdf.set_x(pdf.l_margin)
-    pdf.set_font("Arial", "B", 12)
-    pdf.set_fill_color(230, 230, 230)
-    pdf.cell(0, 8, " 3. Datos globales (segun rango de fecha)", 0, 1, "L", True)
-    pdf.ln(2)
-
-    if df_maq is None or df_maq.empty:
-        pdf.set_font("Arial", "", 9)
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 5, _sanitize_pdf_text("Sin datos globales disponibles."))
-        return 0.0, 0.0
-
-    totals = {
-        "produccion": df_maq["produccion"].sum(),
-        "t_corrida": df_maq["t_corrida"].sum(),
-        "T.perd": df_maq["T.perd"].sum(),
-        "cor.estandar": df_maq["cor.estandar"].sum(),
-    }
-    denom_prod = totals["t_corrida"] + totals["T.perd"]
-    prod_total = (totals["cor.estandar"] / denom_prod) * 100 if denom_prod > 0 else 0.0
-    eficiencia_total = (totals["cor.estandar"] / totals["t_corrida"]) * 100 if totals["t_corrida"] > 0 else 0.0
-
-    pdf.set_font("Arial", "", 9)
-    rows = [
-        ("Produccion", _fmt_int(totals["produccion"])),
-        ("T.corrida", _fmt_float(totals["t_corrida"])),
-        ("Tiempo Perdido", _fmt_float(totals["T.perd"])),
-        ("Corrida Estandar", _fmt_float(totals["cor.estandar"])),
-        ("%productivida_total", f"{prod_total:.2f}%"),
-        ("%eficiencia_total", f"{eficiencia_total:.2f}%"),
-    ]
-    for label, value in rows:
-        pdf.set_x(pdf.l_margin)
-        pdf.cell(55, 6, _sanitize_pdf_text(label), 1, 0, "L")
-        pdf.cell(0, 6, _sanitize_pdf_text(str(value)), 1, 1, "L")
-    return prod_total, eficiencia_total
-
-
-def _render_signature(pdf: FPDF):
-    pdf.ln(6)
-    pdf.set_font("Helvetica", "I", 9)
-    pdf.cell(0, 8, _sanitize_pdf_text("Informe Generado por Agente IA CiplasBot"),
-             ln=1, align="C")
-
-
-class ReporteCostura(FPDF):
+class ReporteGasa(FPDF):
     def __init__(self, start: date, end: date, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._start_date = start
@@ -559,17 +325,16 @@ class ReporteCostura(FPDF):
 
     def header(self):
         self.set_font("Arial", "B", 16)
-        self.cell(0, 10, "Analisis proceso Costura", 0, 1, "C")
+        self.cell(0, 10, "Analisis proceso Gasa", 0, 1, "C")
+        self.set_font("Arial", "", 10)
         rango_txt = (
             f"Rango del informe {self._start_date.strftime('%d/%m/%Y')} "
             f"a {self._end_date.strftime('%d/%m/%Y')}"
         )
-        self.set_font("Arial", "", 10)
         self.cell(0, 6, rango_txt, 0, 1, "C")
-        self.set_font("Arial", "", 10)
         fecha_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        self.cell(0, 10, f"Fecha y hora de generacion: {fecha_hora}", 0, 1, "R")
-        self.ln(5)
+        self.cell(0, 8, f"Fecha y hora de generacion: {fecha_hora}", 0, 1, "R")
+        self.ln(3)
 
     def tabla_maquinas(self, df: pd.DataFrame) -> None:
         self.set_font("Arial", "B", 12)
@@ -600,12 +365,12 @@ class ReporteCostura(FPDF):
             self.cell(widths[6], 7, f"{row['%eficiencia']:.2f}%", 1, 0, "R")
             self.set_font("Arial", "", 8)
             self.ln()
-        self.ln(10)
+        self.ln(8)
 
     def tabla_operarios(self, df: pd.DataFrame) -> None:
         self.set_font("Arial", "B", 12)
         self.set_fill_color(235, 241, 222)
-        self.cell(0, 10, " Seguimiento Eficiencia operarios", 0, 1, "L", True)
+        self.cell(0, 10, " 2. Seguimiento Eficiencia operarios", 0, 1, "L", True)
         self.ln(2)
 
         self.set_font("Arial", "B", 8)
@@ -627,7 +392,7 @@ class ReporteCostura(FPDF):
             else:
                 self.set_fill_color(255, 255, 255)
 
-            trend_text = _sanitize_pdf_text(row["tendencia_label"])
+            trend_text = row.get("tendencia_label", "")
             if "Mejora" in trend_text:
                 self.set_text_color(0, 100, 0)
             elif "Decreciente" in trend_text:
@@ -656,22 +421,170 @@ class ReporteCostura(FPDF):
             self.cell(widths[3], row_h, f"{row['T.perdido']:.2f}", 1, 0, "R", True)
             self.cell(widths[4], row_h, f"{row['Cor.estandar']:.2f}", 1, 0, "R", True)
             self.cell(widths[5], row_h, f"{row['%eficiencia_mes']:.2f}%", 1, 0, "R", True)
-
             self.multi_cell(widths[6], line_h, trend_text, 1, "L", True)
             self.set_text_color(0, 0, 0)
             self.set_y(base_y + row_h)
 
 
-def build_pdf_costura(df_range_filtered: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
-    df_filt = _filter_costura_records(df_range_filtered)
+def _filter_gasa_records(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    c_art = _find_col(df, COLS["articulo"])
+    c_maq = _find_col(df, COLS["maquina"])
+    if not (c_art and c_maq):
+        return pd.DataFrame()
+    mask = _starts_with_ci(df[c_art], "CAG") & _starts_with_ci(df[c_maq], "FILET")
+    return df.loc[mask].copy()
+
+
+def _prepare_maquina_table(df_prod: pd.DataFrame) -> pd.DataFrame:
+    if df_prod is None or df_prod.empty:
+        return pd.DataFrame(columns=[
+            "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
+        ])
+    c_maq = _find_col(df_prod, COLS["maquina"])
+    c_qty = _find_col(df_prod, COLS["cantidad"])
+    c_tc = _find_col(df_prod, COLS["tc"])
+    c_tp = _find_col(df_prod, COLS["tp"])
+    c_cs = _find_col(df_prod, COLS["cs"])
+    if not (c_maq and c_qty and c_tc and c_tp and c_cs):
+        return pd.DataFrame(columns=[
+            "Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar", "%productividad", "%eficiencia"
+        ])
+
+    df_maq = df_prod.groupby(c_maq).agg({
+        c_qty: "sum",
+        c_tc: "sum",
+        c_tp: "sum",
+        c_cs: "sum",
+    }).reset_index()
+    df_maq.columns = ["Maquina", "produccion", "t_corrida", "T.perd", "cor.estandar"]
+
+    for col in ["produccion", "t_corrida", "T.perd", "cor.estandar"]:
+        df_maq[col] = pd.to_numeric(df_maq[col], errors="coerce").fillna(0.0)
+
+    denom_prod = df_maq["t_corrida"] + df_maq["T.perd"]
+    df_maq["%productividad"] = np.where(denom_prod > 0, (df_maq["cor.estandar"] / denom_prod) * 100, 0.0)
+    df_maq["%eficiencia"] = np.where(df_maq["t_corrida"] > 0, (df_maq["cor.estandar"] / df_maq["t_corrida"]) * 100, 0.0)
+    df_maq.replace([np.inf, -np.inf], 0, inplace=True)
+    return df_maq
+
+
+def _prepare_operario_table(df_prod: pd.DataFrame, end_date: date) -> pd.DataFrame:
+    if df_prod is None or df_prod.empty:
+        return pd.DataFrame(columns=[
+            "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes"
+        ])
+    c_op = _find_col(df_prod, COLS["operario"])
+    c_qty = _find_col(df_prod, COLS["cantidad"])
+    c_tc = _find_col(df_prod, COLS["tc"])
+    c_tp = _find_col(df_prod, COLS["tp"])
+    c_cs = _find_col(df_prod, COLS["cs"])
+    if not (c_op and c_tc and c_tp and c_cs):
+        return pd.DataFrame(columns=[
+            "Nombre", "Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar", "%eficiencia_mes"
+        ])
+
+    agg_map = {c_tc: "sum", c_tp: "sum", c_cs: "sum"}
+    if c_qty:
+        agg_map[c_qty] = "sum"
+    df_ope = df_prod.groupby(c_op).agg(agg_map).reset_index()
+    columns = ["Nombre", "Tiempo_corrida", "T.perdido", "Cor.estandar"]
+    if c_qty:
+        columns.append("Produccion")
+    df_ope.columns = columns
+    if "Produccion" not in df_ope.columns:
+        df_ope["Produccion"] = 0.0
+    for col in ["Produccion", "Tiempo_corrida", "T.perdido", "Cor.estandar"]:
+        df_ope[col] = pd.to_numeric(df_ope[col], errors="coerce").fillna(0.0)
+    df_ope["%eficiencia_mes"] = np.where(
+        df_ope["Tiempo_corrida"] > 0,
+        (df_ope["Cor.estandar"] / df_ope["Tiempo_corrida"]) * 100,
+        0.0,
+    )
+    df_ope.replace([np.inf, -np.inf], 0, inplace=True)
+    df_ope = df_ope.sort_values(by="%eficiencia_mes", ascending=False)
+    labeler = _trend_labeler(end_date, months=4)
+    df_ope["tendencia_label"] = df_ope["Nombre"].apply(labeler)
+    return df_ope
+
+
+def _render_productivity_note(pdf: FPDF, eficiencia_total: float, prod_total: float) -> None:
+    diff_causas = eficiencia_total - prod_total
+    restante = 85.0 - eficiencia_total
+    pdf.ln(4)
+    pdf.set_x(pdf.l_margin)
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(0, 100, 0)
+    pdf.cell(0, 6, "Objetivo de productividad 85%.", 0, 1, "L")
+    pdf.set_text_color(150, 0, 0)
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        5,
+        f"Las causas de tiempo perdido corresponden a {diff_causas:.1f} puntos de productividad.",
+    )
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", "B", 9)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(
+        0,
+        5,
+        f"El restante {restante:.1f} es por bajo eficiencia del proceso.",
+    )
+    pdf.set_text_color(0, 0, 0)
+
+
+def _render_global_data(pdf: FPDF, df_maq: pd.DataFrame) -> None:
+    pdf.ln(4)
+    pdf.set_x(pdf.l_margin)
+    pdf.set_font("Arial", "B", 12)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(0, 8, " 3. Datos globales (segun rango de fecha)", 0, 1, "L", True)
+    pdf.ln(2)
+
+    if df_maq is None or df_maq.empty:
+        pdf.set_font("Arial", "", 9)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 5, "Sin datos globales disponibles.")
+        return
+
+    totals = {
+        "produccion": df_maq["produccion"].sum(),
+        "t_corrida": df_maq["t_corrida"].sum(),
+        "T.perd": df_maq["T.perd"].sum(),
+        "cor.estandar": df_maq["cor.estandar"].sum(),
+    }
+    denom_prod = totals["t_corrida"] + totals["T.perd"]
+    prod_total = (totals["cor.estandar"] / denom_prod) * 100 if denom_prod > 0 else 0.0
+    eficiencia_total = (totals["cor.estandar"] / totals["t_corrida"]) * 100 if totals["t_corrida"] > 0 else 0.0
+
+    pdf.set_font("Arial", "", 9)
+    rows = [
+        ("Produccion", f"{totals['produccion']:,.0f}"),
+        ("T.corrida", f"{totals['t_corrida']:.2f}"),
+        ("Tiempo Perdido", f"{totals['T.perd']:.2f}"),
+        ("Corrida Estandar", f"{totals['cor.estandar']:.2f}"),
+        ("%productivida_total", f"{prod_total:.2f}%"),
+        ("%eficiencia_total", f"{eficiencia_total:.2f}%"),
+    ]
+    for label, value in rows:
+        pdf.set_x(pdf.l_margin)
+        pdf.cell(55, 6, label, 1, 0, "L")
+        pdf.cell(0, 6, str(value), 1, 1, "L")
+
+
+def build_pdf_gasa(df_range_filtered: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
+    df_filt = _filter_gasa_records(df_range_filtered)
     df_maq = _prepare_maquina_table(df_filt)
     df_ope = _prepare_operario_table(df_filt, end)
 
-    pdf = ReporteCostura(start, end, format="Letter")
+    pdf = ReporteGasa(start, end, format="Letter")
     pdf.add_page()
     if df_maq.empty:
         pdf.set_font("Arial", "B", 11)
-        pdf.cell(0, 8, "Sin datos para Costura en el rango seleccionado.", 0, 1, "L")
+        pdf.cell(0, 8, "Sin datos para Gasa en el rango seleccionado.", 0, 1, "L")
     else:
         totals = {
             "produccion": df_maq["produccion"].sum(),
@@ -688,39 +601,13 @@ def build_pdf_costura(df_range_filtered: pd.DataFrame, start: date, end: date) -
         pdf.tabla_maquinas(df_maq)
         if not df_ope.empty:
             pdf.tabla_operarios(df_ope)
-            pdf.set_font("Arial", "I", 8)
-            pdf.set_text_color(0, 0, 0)
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(
-                0,
-                5,
-                _sanitize_pdf_text(
-                    "Nota: La tendencia compara el promedio de eficiencia de los primeros 2 meses "
-                    "vs los últimos 2 meses (ventana de 4 meses), calculando (ultimos - anteriores). "
-                    "Se incluye el %Efic Mes del último mes."
-                ),
-            )
         _render_global_data(pdf, df_maq)
-        _render_signature(pdf)
 
-    fname = f"Analisis_Proceso_Costura_{start.isoformat()}_{end.isoformat()}.pdf"
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 8, "Informe Generado por Agente IA CiplasBot", 0, 1, "C")
+
+    fname = f"Analisis_Proceso_Gasa_{start.isoformat()}_{end.isoformat()}.pdf"
     out_path = os.path.join(REPORTS_DIR, fname)
     pdf.output(out_path)
     return out_path, []
-
-
-__all__ = [
-    "COLS",
-    "_download_costura_df",
-    "_find_col",
-    "build_pdf_costura",
-    "handle_costura_message",
-]
-
-
-def handle_costura_message(_phone_key: str, _text: str) -> bool:
-    """
-    Handler placeholder for costura messages.
-    Actualmente los informes de costura se gestionan via `informe eficiencia`.
-    """
-    return False
