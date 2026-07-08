@@ -32,13 +32,16 @@ from services.tasks_manager import (
 # Ventana WhatsApp 24h
 from services.wa_window_manager import record_inbound, canon_phone_e164_co
 
-# Informe de desempeño individual (operario) RTR clásico
+# Informes de desempeño individual (operario)
 from workflows.performance_report import handle_performance_report_request
-
-# NUEVO: Informe de desempeño Impresión Gráfica
 from workflows.performance_report_imprgraf import handle_performance_report_request_imprgraf
+from workflows.extruder_performance_report import handle_extruder_report_request
+from workflows.costura_performance_report import handle_costura_performance_report_request
 
-# Reporte de COSTURA
+# NUEVO: Informe de desempeño RECUPERADO
+from workflows.recuperado_performance_report import handle_recuperado_report_request
+
+# Reporte de COSTURA (Línea)
 from workflows.costura_report import handle_costura_message
 
 # Informe Gerencial de Línea (admin)
@@ -63,6 +66,9 @@ client = OpenAI()
 # === NUEVO: rutas de operadores autorizados para informes ===
 OPERATORS_FILE = os.path.join(CONFIG_DIR, "operators.json")
 OPERATORS_IMPR_GRAF_FILE = os.path.join(CONFIG_DIR, "operators_impr_graf.json")
+OPERATORS_EXTRUDER_FILE = os.path.join(CONFIG_DIR, "operators_extruder.json")
+OPERATORS_COSTURA_FILE = os.path.join(CONFIG_DIR, "operators_costura.json")
+OPERATORS_RECUPERADO_FILE = os.path.join(CONFIG_DIR, "operators_recuperado.json") # NUEVO RECUPERADO
 
 
 # =========================
@@ -93,6 +99,9 @@ def is_whitelisted_phone(phone_raw: str) -> bool:
        - SUPERVISORS_FILE (users/supervisors/admins…)
        - operators.json (RTR)
        - operators_impr_graf.json (IMPRGRAF)
+       - operators_extruder.json (EXTRUDER)
+       - operators_costura.json (COSTURA)
+       - operators_recuperado.json (RECUPERADO)
     """
     in_digits = normalize_phone(phone_raw or "")
     in_e164 = normalize_phone(canon_phone_e164_co(in_digits) or in_digits)
@@ -139,6 +148,36 @@ def is_whitelisted_phone(phone_raw: str) -> bool:
             ops_graf_data = json.load(f)
         ops_graf_phones = _phones_from_json_array(ops_graf_data.get("operators", []))
         if in_digits in ops_graf_phones or in_e164 in ops_graf_phones:
+            return True
+    except Exception:
+        pass
+
+    # 4) Operadores Extrusión
+    try:
+        with open(OPERATORS_EXTRUDER_FILE, encoding="utf-8") as f:
+            ops_ext_data = json.load(f)
+        ops_ext_phones = _phones_from_json_array(ops_ext_data.get("operators", []))
+        if in_digits in ops_ext_phones or in_e164 in ops_ext_phones:
+            return True
+    except Exception:
+        pass
+
+    # 5) Operadores Costura
+    try:
+        with open(OPERATORS_COSTURA_FILE, encoding="utf-8") as f:
+            ops_costura_data = json.load(f)
+        ops_costura_phones = _phones_from_json_array(ops_costura_data.get("operators", []))
+        if in_digits in ops_costura_phones or in_e164 in ops_costura_phones:
+            return True
+    except Exception:
+        pass
+
+    # 6) Operadores Recuperado
+    try:
+        with open(OPERATORS_RECUPERADO_FILE, encoding="utf-8") as f:
+            ops_recup_data = json.load(f)
+        ops_recup_phones = _phones_from_json_array(ops_recup_data.get("operators", []))
+        if in_digits in ops_recup_phones or in_e164 in ops_recup_phones:
             return True
     except Exception:
         pass
@@ -196,7 +235,7 @@ def respuesta_inteligente(texto: str, nombre: str, numero: str) -> str:
     )
     try:
         chat = client.chat.completions.create(
-            model="o4-mini",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": prompt_sistema},
                 {"role": "user", "content": texto}
@@ -386,7 +425,7 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
     # =========================================================
     # 4) INFORMES específicos (antes del NLU genérico)
     # =========================================================
-    # 4.1) NUEVO: Informe de desempeño IMPRESIÓN GRÁFICA
+    # 4.1) Informe de desempeño IMPRESIÓN GRÁFICA
     try:
         handled_perf_imprgraf = handle_performance_report_request_imprgraf(phone_key, texto)
     except Exception as e:
@@ -394,6 +433,33 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
         handled_perf_imprgraf = False
     if handled_perf_imprgraf:
         return {"status": "ok", "detail": "performance_report_imprgraf_handled"}
+
+    # 4.1.b) Informe de desempeño EXTRUSIÓN
+    try:
+        handled_perf_extruder = handle_extruder_report_request(phone_key, texto)
+    except Exception as e:
+        print(f"❌ Error en handle_extruder_report_request: {e}")
+        handled_perf_extruder = False
+    if handled_perf_extruder:
+        return {"status": "ok", "detail": "extruder_report_handled"}
+        
+    # 4.1.c) Informe de desempeño COSTURA (Individual)
+    try:
+        handled_perf_costura = handle_costura_performance_report_request(phone_key, texto)
+    except Exception as e:
+        print(f"❌ Error en handle_costura_performance_report_request: {e}")
+        handled_perf_costura = False
+    if handled_perf_costura:
+        return {"status": "ok", "detail": "costura_individual_report_handled"}
+
+    # 4.1.d) NUEVO: Informe de desempeño RECUPERADO
+    try:
+        handled_perf_recup = handle_recuperado_report_request(phone_key, texto)
+    except Exception as e:
+        print(f"❌ Error en handle_recuperado_report_request: {e}")
+        handled_perf_recup = False
+    if handled_perf_recup:
+        return {"status": "ok", "detail": "recuperado_report_handled"}
 
     # 4.2) Informe de desempeño RTR clásico
     try:
@@ -404,7 +470,7 @@ async def handle_ciplasbot(payload: WhatsAppMessage):
     if handled_perf:
         return {"status": "ok", "detail": "performance_report_handled"}
 
-    # 4.3) COSTURA
+    # 4.3) COSTURA (Reporte de Línea / Máquinas)
     try:
         handled_costura = handle_costura_message(phone_key, texto)
     except Exception as e:

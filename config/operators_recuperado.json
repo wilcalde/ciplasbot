@@ -1,0 +1,45 @@
+{
+    "operators": [
+      {
+        "phone_e164": "573142855600",
+        "Apellidos_Nombres": "ORTIZ RODRIGUEZ HERMENCIO",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573132205469",
+        "Apellidos_Nombres": "GONZALEZ GUANGA WILMER",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573112336569",
+        "Apellidos_Nombres": "GOMEZ VICTOR HUGO",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573158311414",
+        "Apellidos_Nombres": "PEREZ CASTRO CRISTOBAL ANDRES",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573209993454",
+        "Apellidos_Nombres": "LOPEZ GALINDO BRAYAN ALEXANDER",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573102735251",
+        "Apellidos_Nombres": "MARCIALES URBINA MARLON ESTEFAN",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573107702981",
+        "Apellidos_Nombres": "BARRAGAN MENDOZA ENDER",
+        "area": "RECUPERADO"
+      },
+      {
+        "phone_e164": "573233968023",
+        "Apellidos_Nombres": "PINZON ACOSTA CARLOS DANIEL",
+        "area": "RECUPERADO"
+      }
+      
+    ]
+  }

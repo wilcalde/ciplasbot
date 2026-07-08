@@ -18,6 +18,9 @@ from services.tasks_manager import run_pending_tasks_reminders
 # ⏰ Ventana WhatsApp (24h) + nudges
 from services.wa_window_manager import schedule_window_jobs, load_config, run_nudges
 
+# 🗄️ NUEVO: Rotación Mensual de Base de Datos de Eficiencia
+from workflows.monthly_efficiency_rotation import rotate_efficiency_database
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "").strip() or default)
@@ -30,12 +33,26 @@ def _env_time(env_hour: str, env_min: str, default_hour: int, default_min: int):
 def start_scheduler():
     scheduler = BlockingScheduler(timezone=timezone("America/Bogota"))
 
+    # ✅ 0. (Nuevo) Rotación Mensual de Base de Datos de Eficiencia
+    # Se ejecuta el día 1 de cada mes a la 1:15 AM. 
+    # Mantiene los últimos 3 meses, actualiza el mes anterior y elimina el más antiguo.
+    scheduler.add_job(
+        rotate_efficiency_database,
+        'cron',
+        day=1,
+        hour=4,
+        minute=0,
+        id='monthly_efficiency_rotation',
+        misfire_grace_time=3600,
+        coalesce=True
+    )
+
     # ✅ 1. Enviar tareas del día (motivación/equipo)
     scheduler.add_job(
         send_daily_tasks,
         'cron',
         hour=_env_int("SEND_DAILY_TASKS_HOUR", 6),
-        minute=_env_int("SEND_DAILY_TASKS_MINUTE", 30),
+        minute=_env_int("SEND_DAILY_TASKS_MINUTE", 15),
         day_of_week=os.getenv("SEND_DAILY_TASKS_DOW", "0-5"),
         id='send_tasks',
         misfire_grace_time=300,
@@ -70,7 +87,7 @@ def start_scheduler():
     rem_hour, rem_min = _env_time(
         "PENDING_TASKS_REMINDER_HOUR",
         "PENDING_TASKS_REMINDER_MINUTE",
-        6, 20
+        6, 30
     )
     rem_dow = os.getenv("PENDING_TASKS_REMINDER_DOW", "0-5")
 
@@ -89,31 +106,7 @@ def start_scheduler():
         coalesce=True
     )
 
-    # ✅ 4. Solicitar cuestionario de supervisión
-    scheduler.add_job(
-        send_supervision_questions,
-        'cron',
-        hour=_env_int("SUP_QUESTIONS_HOUR", 14),
-        minute=_env_int("SUP_QUESTIONS_MINUTE", 30),
-        day_of_week=os.getenv("SUP_QUESTIONS_DOW", "0-4"),
-        id='send_supervision_questions',
-        misfire_grace_time=300,
-        coalesce=True
-    )
-
-    # ✅ 5. Compilar respuestas y enviar email de supervisión
-    scheduler.add_job(
-        compile_supervision_report,
-        'cron',
-        hour=_env_int("SUP_REPORT_HOUR", 17),
-        minute=_env_int("SUP_REPORT_MINUTE", 00),
-        day_of_week=os.getenv("SUP_REPORT_DOW", "0-4"),
-        id='compile_supervision_report',
-        misfire_grace_time=300,
-        coalesce=True
-    )
-
-    # ✅ 6. Monitorear informes incompletos y notificar cada N minutos
+    # ✅ 4. Monitorear informes incompletos y notificar cada N minutos
     scheduler.add_job(
         check_incomplete_reports_and_notify,
         'interval',
@@ -123,19 +116,7 @@ def start_scheduler():
         coalesce=True
     )
 
-    # ✅ 7. Enviar link del dashboard a cada supervisor (resultados día anterior)
-    scheduler.add_job(
-        send_dashboard_links,
-        'cron',
-        hour=_env_int("DASHBOARD_LINKS_HOUR", 11),
-        minute=_env_int("DASHBOARD_LINKS_MINUTE", 0),
-        day_of_week=os.getenv("DASHBOARD_LINKS_DOW", "0-5"),
-        id='send_dashboard_links',
-        misfire_grace_time=300,
-        coalesce=True
-    )
-
-    # ✅ 8. (Nuevo) Nudges de ventana WhatsApp 24h
+    # ✅ 5. Nudges de ventana WhatsApp 24h
     schedule_window_jobs(scheduler)  # registra el job periódico
     run_nudges()  # crea config/wa_conversations.json al arranque si no existe
 
@@ -143,6 +124,7 @@ def start_scheduler():
     wa_cfg = load_config()
     print(
         "🚦 CIPLASBOT Scheduler configurado:\n"
+        "   - 🗓️ Rotación Mensual DB: Día 1 de cada mes a las 01:15 AM\n"
         "   - 🕡 Tareas motivadoras (equipo): "
         f"{_env_int('SEND_DAILY_TASKS_HOUR', 6):02d}:{_env_int('SEND_DAILY_TASKS_MINUTE', 30):02d} "
         f"(DOW='{os.getenv('SEND_DAILY_TASKS_DOW', '0-4')}')\n"
@@ -154,12 +136,6 @@ def start_scheduler():
         "   - 📝 Compilar resumen diario: "
         f"{_env_int('COMPILE_SUMMARY_HOUR', 8):02d}:{_env_int('COMPILE_SUMMARY_MINUTE', 0):02d} "
         f"(DOW='{os.getenv('COMPILE_SUMMARY_DOW', '0-5')}')\n"
-        "   - ❓ Cuestionario supervisión: "
-        f"{_env_int('SUP_QUESTIONS_HOUR', 14):02d}:{_env_int('SUP_QUESTIONS_MINUTE', 30):02d} "
-        f"(DOW='{os.getenv('SUP_QUESTIONS_DOW', '0-4')}')\n"
-        "   - 📧 Resumen supervisión (email): "
-        f"{_env_int('SUP_REPORT_HOUR', 17):02d}:{_env_int('SUP_REPORT_MINUTE', 0):02d} "
-        f"(DOW='{os.getenv('SUP_REPORT_DOW', '0-4')}')\n"
         "   - ⏱ Monitor supervisión: cada "
         f"{_env_int('SUP_MONITOR_MINUTES', 5)} min\n"
         "   - 📊 Envío dashboards: "
@@ -172,3 +148,6 @@ def start_scheduler():
     )
 
     scheduler.start()
+
+if __name__ == "__main__":
+    start_scheduler()

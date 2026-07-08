@@ -26,30 +26,6 @@
       "created_at": "2025-08-21 16:10:55"
     },
     {
-      "id": "ab28b0ae",
-      "title": "Eliminar banda de costura área de maquila",
-      "description": "",
-      "priority": "media",
-      "due": "2025-08-29",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-08-25 11:51:53"
-    },
-    {
-      "id": "2c8955e5",
-      "title": "Revisar codigo de barras lam16471.Azucar riopaila",
-      "description": "",
-      "priority": "alta",
-      "due": "2025-09-11",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-09-10 08:39:58"
-    },
-    {
       "id": "1f2e0bcd",
       "title": "revisar personal temporal cambio de contrato fin de año y distribuir salidas",
       "description": "",
@@ -111,18 +87,6 @@
       "created_at": "2025-09-29 13:31:00"
     },
     {
-      "id": "c9ceb025",
-      "title": "Prueba de empaque sacos Leno",
-      "description": "",
-      "priority": "alta",
-      "due": null,
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-09-30 14:25:13"
-    },
-    {
       "id": "273d3ed3",
       "title": "Habilitar pisadores Comexi",
       "description": "",
@@ -133,18 +97,6 @@
       "assignee_phone": "",
       "assignee_phone_raw": "",
       "created_at": "2025-10-01 09:43:43"
-    },
-    {
-      "id": "40ff5587",
-      "title": "Pedir 20 a-z impresión",
-      "description": "",
-      "priority": "alta",
-      "due": "2025-10-24",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-10-23 08:39:03"
     },
     {
       "id": "cb1c4668",
@@ -159,42 +111,6 @@
       "created_at": "2025-10-29 17:51:19"
     },
     {
-      "id": "a28de10b",
-      "title": "Cambiar dobladillador a pequeño en planas",
-      "description": "",
-      "priority": "alta",
-      "due": "2025-10-31",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-10-30 08:49:28"
-    },
-    {
-      "id": "f5c8969b",
-      "title": "OPL nudo en rewinder",
-      "description": "",
-      "priority": "alta",
-      "due": null,
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-11-10 13:56:45"
-    },
-    {
-      "id": "72a990d2",
-      "title": "Montar pedidos prueba sunchemical",
-      "description": "",
-      "priority": "media",
-      "due": "2025-11-21",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-11-20 17:16:05"
-    },
-    {
       "id": "c69caabe",
       "title": "Inspección de piñones rodillo plancha Saturno D=550 mm. 6 unidades.",
       "description": "",
@@ -205,42 +121,6 @@
       "assignee_phone": "",
       "assignee_phone_raw": "",
       "created_at": "2025-12-05 11:04:00"
-    },
-    {
-      "id": "bc1b1013",
-      "title": "Montar pedido arreglo espigos y 2 piñones porta plancha nuevos",
-      "description": "",
-      "priority": "media",
-      "due": "2025-12-10",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2025-12-10 09:51:12"
-    },
-    {
-      "id": "658ed3ca",
-      "title": "OPL solla identificación de lotes",
-      "description": "",
-      "priority": "alta",
-      "due": "2026-01-07",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2026-01-06 20:05:00"
-    },
-    {
-      "id": "2b33457e",
-      "title": "Parametrizar rollos de la Saturno",
-      "description": "",
-      "priority": "alta",
-      "due": "2026-01-20",
-      "status": "pendiente",
-      "assignee_name": "",
-      "assignee_phone": "",
-      "assignee_phone_raw": "",
-      "created_at": "2026-01-14 12:19:00"
     },
     {
       "id": "e6872e05",
@@ -265,6 +145,126 @@
       "assignee_phone": "",
       "assignee_phone_raw": "",
       "created_at": "2026-01-19 08:42:02"
+    },
+    {
+      "id": "ee2cbf6c",
+      "title": "Layout valvuladora",
+      "description": "",
+      "priority": "media",
+      "due": null,
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-01-23 08:21:31"
+    },
+    {
+      "id": "7eb515df",
+      "title": "OPL control laca cor Saturno",
+      "description": "",
+      "priority": "media",
+      "due": "2026-01-29",
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-01-24 11:41:15"
+    },
+    {
+      "id": "094d2f28",
+      "title": "norma de auto8",
+      "description": "similar a la auto23",
+      "priority": "media",
+      "due": null,
+      "status": "pendiente",
+      "assignee_name": "Orlando Diaz",
+      "assignee_phone": "573176405985",
+      "assignee_phone_raw": "573176405985",
+      "created_at": "2026-02-02 09:04:10"
+    },
+    {
+      "id": "9cc86155",
+      "title": "Capacitar operarios en valvulado",
+      "description": "",
+      "priority": "media",
+      "due": "2026-02-08",
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-02-03 09:22:56"
+    },
+    {
+      "id": "4c5363b2",
+      "title": "Pedir pinones saturno y baberos",
+      "description": "",
+      "priority": "media",
+      "due": null,
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-02-25 14:35:36"
+    },
+    {
+      "id": "3790f95b",
+      "title": "Nivelacion refiladora",
+      "description": "",
+      "priority": "media",
+      "due": "2026-03-10",
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-03-09 15:31:03"
+    },
+    {
+      "id": "cb88adb5",
+      "title": "Pedir herramienta Niulan",
+      "description": "",
+      "priority": "media",
+      "due": "2026-03-17",
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-03-14 06:35:23"
+    },
+    {
+      "id": "9ad71920",
+      "title": "Informe plastipack cuerdas",
+      "description": "",
+      "priority": "media",
+      "due": "2026-03-19",
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-03-18 09:08:29"
+    },
+    {
+      "id": "0e5ef898",
+      "title": "Pedir delantales y gato para impresión",
+      "description": "",
+      "priority": "media",
+      "due": null,
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-04-08 14:18:56"
+    },
+    {
+      "id": "1cf04465",
+      "title": "Pedir eslinga montajes 1 metro largo",
+      "description": "",
+      "priority": "media",
+      "due": null,
+      "status": "pendiente",
+      "assignee_name": "",
+      "assignee_phone": "",
+      "assignee_phone_raw": "",
+      "created_at": "2026-06-05 13:43:11"
     }
   ]
 }

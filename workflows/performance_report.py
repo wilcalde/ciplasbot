@@ -1,6 +1,7 @@
 # workflows/performance_report.py
 # genera el informe de desempeño impresion RTR + sección Desperdicio
 # + LOG de solicitudes: guarda cada vez que un operario pide el informe
+# informe disparado por whatsapp
 
 import os
 import re

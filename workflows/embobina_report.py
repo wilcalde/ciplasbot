@@ -1,9 +1,8 @@
-# workflows/fileteado_leno.py
+# workflows/embobina_report.py
 import os
 import re
 import sqlite3
-import matplotlib.pyplot as plt
-from datetime import date, datetime
+from datetime import datetime, date
 
 import numpy as np
 import pandas as pd
@@ -11,8 +10,14 @@ from fpdf import FPDF
 
 from services.session_memory import CONFIG_DIR
 
-REPORTS_DIR = os.path.join(CONFIG_DIR, "fileteado_reports")
+# --- Configuración de Rutas y URL ---
+REPORTS_DIR = os.path.join(CONFIG_DIR, "cuerdas_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
+
+# URL compartida para el área de Cuerdas
+EMBOBINA_DATA_URL = (
+    "https://docs.google.com/spreadsheets/d/17cV1hJyZPsoaowZLGJuyhmKtoeWdDTrdWLUjPpDQInQ/export?format=xlsx"
+)
 
 OPERARIOS_DB_FILENAME = "base_conversion_eficiencias_conversion.db"
 OPERARIOS_DB_PATHS = (
@@ -21,14 +26,14 @@ OPERARIOS_DB_PATHS = (
 )
 
 COLS = {
-    "articulo": ["Numero_Articulo", "numero_articulo", "Articulo", "articulo", "Numero de articulo"],
+    "fecha": ["Fecha", "Fecha_Efectiva", "Fecha_Registro", "fecha", "fecha_efectiva"],
     "maquina": ["Maquina", "Máquina", "maquina", "máquina", "Equipo", "equipo"],
     "cantidad": ["Cantidad_Completada", "cantidad_completada", "Cantidad", "cantidad"],
     "tc": ["Tiempo_Corrida", "tiempo_corrida", "tpo_corrida", "tpo_cda"],
     "tp": ["Tiempo_Perdido", "tiempo_perdido", "tmp_perd", "tiempo_paro"],
     "cs": ["Corrida_Standar", "corrida_standar", "CORRSTAND", "corrida_estandar"],
     "operario": ["Apellidos_Nombres", "apellidos_nombres", "Operario", "operario", "Nombre_Operario"],
-    "causa": ["Causa_Paro", "Causa", "Motivo", "Causa de Paro"]
+    "centro": ["Centro_Trabajo", "centro_trabajo", "Centro"]
 }
 
 MESES_ES = {
@@ -36,7 +41,7 @@ MESES_ES = {
     7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
 }
 
-# --- Auxiliares ---
+# --- Utilidades ---
 
 def _normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (s or "").strip().lower()).strip("_")
@@ -51,16 +56,16 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
         if key in norm_map: return norm_map[key]
     return None
 
-def _starts_with_ci(series: pd.Series, prefix: str) -> pd.Series:
-    return series.astype(str).str.upper().str.startswith(prefix.upper())
-
 def _sanitize_pdf_text(s: str) -> str:
     if not s: return ""
     repl = {"•": "-", "–": "-", "—": "-", "“": '"', "”": '"', "‘": "'", "’": "'", "\u00A0": " "}
     for k, v in repl.items(): s = s.replace(k, v)
     return s.encode("latin-1", "ignore").decode("latin-1")
 
-# --- Gestión de Datos Históricos ---
+# --- Lógica de Datos ---
+
+def _download_embobina_df() -> pd.DataFrame:
+    return pd.read_excel(EMBOBINA_DATA_URL)
 
 def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.DataFrame:
     db_path = next((p for p in OPERARIOS_DB_PATHS if os.path.exists(p)), None)
@@ -78,9 +83,9 @@ def _read_efficiency_history_from_sqlite(end_date: date, months: int = 4) -> pd.
         
         eff_cols = [c for c in cols if "eficiencia" in _normalize(c)]
         select_list = [f'"{c_nombre}" as Operario', f'"{c_area}" as area'] + [f'"{c}"' for c in eff_cols]
-        cols_sql = ", ".join(select_list)
+        query = f"SELECT {', '.join(select_list)} FROM \"{table}\""
         
-        df = pd.read_sql_query(f"SELECT {cols_sql} FROM \"{table}\" WHERE area = 'fileteado'", conn)
+        df = pd.read_sql_query(query, conn)
         df["Operario"] = df["Operario"].astype(str).str.strip().str.casefold()
         return df.melt(id_vars=["Operario", "area"], var_name="Mes", value_name="eficiencia_mes")
     finally: conn.close()
@@ -114,7 +119,7 @@ def _trend_labeler(end_date: date, current_eff: dict[str, float], months: int = 
         return f"{base}_ Neutro"
     return _label
 
-# --- Tablas de Procesamiento ---
+# --- Procesamiento de Datos ---
 
 def _prepare_maquina_table(df: pd.DataFrame) -> pd.DataFrame:
     c_maq, c_qty, c_tc, c_tp, c_cs = [_find_col(df, COLS[k]) for k in ["maquina", "cantidad", "tc", "tp", "cs"]]
@@ -128,7 +133,6 @@ def _prepare_operario_table(df: pd.DataFrame, start: date, end: date) -> pd.Data
     c_op, c_tc, c_tp, c_cs, c_qty = [_find_col(df, COLS[k]) for k in ["operario", "tc", "tp", "cs", "cantidad"]]
     res = df.groupby(c_op).agg({c_tc: "sum", c_tp: "sum", c_cs: "sum", c_qty: "sum"}).reset_index()
     res.columns = ["Nombre", "T.corrida", "T.perdido", "Cor.est", "Produccion"]
-    
     res["%_prod"] = (res["Cor.est"] / (res["T.corrida"] + res["T.perdido"])) * 100
     res["%efic"] = (res["Cor.est"] / res["T.corrida"]) * 100
     res = res.sort_values(by="%efic", ascending=False).fillna(0)
@@ -139,55 +143,16 @@ def _prepare_operario_table(df: pd.DataFrame, start: date, end: date) -> pd.Data
     else: res["tendencia_label"] = ""
     return res
 
-# --- Generación de Gráfica de Pareto ---
+# --- Clase de Reporte PDF ---
 
-def _generate_pareto_tp_leno(df: pd.DataFrame, start_str: str) -> str:
-    c_tp = _find_col(df, COLS["tp"])
-    c_causa = _find_col(df, COLS["causa"])
-    
-    if not c_tp or not c_causa: return ""
-
-    df_tp = df.groupby(c_causa)[c_tp].sum().reset_index()
-    df_tp = df_tp[df_tp[c_tp] > 0].sort_values(by=c_tp, ascending=False)
-    
-    if df_tp.empty: return ""
-
-    total_tp = df_tp[c_tp].sum()
-    df_tp['cum_pct'] = df_tp[c_tp].cumsum() / total_tp * 100
-    
-    cutoff = df_tp[df_tp['cum_pct'] <= 80].index
-    if len(cutoff) < len(df_tp):
-        plot_df = df_tp.iloc[:len(cutoff)+1]
-    else:
-        plot_df = df_tp
-
-    plt.figure(figsize=(10, 6))
-    bars = plt.barh(plot_df[c_causa], plot_df[c_tp], color='#7eb0d5', edgecolor='#1d3557')
-    plt.xlabel('Horas Perdidas')
-    plt.title(f'Causas del 80% del Tiempo Perdido - Leno\nTotal Horas: {total_tp:.2f}h')
-    plt.gca().invert_yaxis()
-    plt.grid(axis='x', linestyle='--', alpha=0.7)
-
-    for bar in bars:
-        plt.text(bar.get_width(), bar.get_y() + bar.get_height()/2, 
-                 f' {bar.get_width():.2f}h', va='center', fontsize=9)
-
-    plt.tight_layout()
-    chart_path = os.path.join(REPORTS_DIR, f"pareto_tp_leno_{start_str}.png")
-    plt.savefig(chart_path, dpi=120)
-    plt.close()
-    return chart_path
-
-# --- Clase Reporte PDF ---
-
-class ReporteLeno(FPDF):
+class ReporteEmbobina(FPDF):
     def __init__(self, start: date, end: date):
         super().__init__(format="Letter")
         self._start, self._end = start, end
 
     def header(self):
         self.set_font("Arial", "B", 14)
-        self.cell(0, 10, "Analisis proceso Leno tubular", 0, 1, "C")
+        self.cell(0, 10, "Analisis proceso Embobinado", 0, 1, "C")
         self.set_font("Arial", "", 9)
         self.cell(0, 5, f"Periodo: {self._start.strftime('%d/%m/%Y')} a {self._end.strftime('%d/%m/%Y')}", 0, 1, "C")
         self.ln(5)
@@ -198,14 +163,14 @@ class ReporteLeno(FPDF):
 
     def draw_table_maquinas(self, df):
         self.set_font("Arial", "B", 10)
-        self.cell(0, 8, " 1. Resumen de Produccion por Maquina", 0, 1, "L")
+        self.cell(0, 8, " 1. Resumen de Produccion por Maquina (Embobina)", 0, 1, "L")
         self.set_font("Arial", "B", 8)
-        cols, w = ["Maquina", "Produccion", "T.corr", "T.perd", "%prod", "%efic"], [30, 30, 30, 30, 35, 35]
+        cols, w = ["Maquina", "Produccion", "T.corr", "T.perd", "%prod", "%efic"], [25, 30, 25, 25, 35, 35]
         for i, c in enumerate(cols): self.cell(w[i], 7, c, 1, 0, "C")
         self.ln()
         self.set_font("Arial", "", 8)
         for _, r in df.iterrows():
-            self.cell(w[0], 6, str(r["Maquina"]), 1)
+            self.cell(w[0], 6, str(r["Maquina"])[:15], 1)
             self.cell(w[1], 6, f"{r['produccion']:,.0f}", 1, 0, "R")
             self.cell(w[2], 6, f"{r['t_corrida']:.1f}", 1, 0, "R")
             self.cell(w[3], 6, f"{r['T.perd']:.1f}", 1, 0, "R")
@@ -262,44 +227,31 @@ class ReporteLeno(FPDF):
             self.cell(50, 6, val, 1, 1, "R"); self.set_text_color(0, 0, 0)
         
         self.ln(4); self.set_font("Arial", "B", 10)
-        self.cell(0, 6, "Conclusion del Proceso:", 0, 1)
+        self.cell(0, 6, "Conclusion del Proceso Embobina:", 0, 1)
         self.set_font("Arial", "", 9)
+        
         ratio_perdida = 1 - (prod_total / efic_total) if efic_total > 0 else 0
         unidades_perdidas = totals["produccion"] * ratio_perdida
-        gap_objetivo = 80.0 - prod_total
-        msg = (f"El proceso estuvo por debajo del objetivo de productividad (80%) en {gap_objetivo:.2f}% "
-               f"y los tiempos perdidos generaron una perdida de {unidades_perdidas:,.0f} unidades.")
+        gap_obj = 80.0 - prod_total
+        msg = (f"El proceso de embobinado se encuentra en {prod_total:.2f}% de productividad. "
+               f"Se estima una perdida de {unidades_perdidas:,.0f} unidades por paros y tiempos muertos.")
         self.multi_cell(0, 5, _sanitize_pdf_text(msg))
-
-    def draw_pareto_section(self, img_path):
-        if not img_path or not os.path.exists(img_path): return
-        self.add_page()
-        self.set_font("Arial", "B", 12)
-        self.cell(0, 10, " 4. Analisis de Tiempos Perdidos (Pareto 80/20)", 0, 1, "L")
-        self.image(img_path, x=10, y=30, w=190)
-        self.ln(110)
-        self.set_font("Arial", "I", 8)
-        self.multi_cell(0, 5, "Nota: El grafico muestra las causas que concentran el 80% de las horas improductivas. La gestion prioritaria sobre estos puntos garantizara el mayor impacto en la eficiencia de la linea Leno.")
         self.ln(5); self.set_font("Arial", "I", 9)
-        self.cell(0, 10, "Informe generado por CiplasBot", 0, 1, "C")
+        self.cell(0, 10, "Informe generado por CiplasBot - Area Cuerdas", 0, 1, "C")
 
-# --- Construcción Final ---
+# --- Función Principal ---
 
-def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
-    c_art = _find_col(df_range_filtered, COLS["articulo"])
-    c_maq = _find_col(df_range_filtered, COLS["maquina"])
-    if not (c_art and c_maq): return "", []
+def build_pdf_embobina(df_range: pd.DataFrame, start: date, end: date) -> tuple[str, list[str]]:
+    c_centro = _find_col(df_range, COLS["centro"])
+    if not c_centro: return "", []
     
-    mask = _starts_with_ci(df_range_filtered[c_art], "LEN") & _starts_with_ci(df_range_filtered[c_maq], "FILET")
-    df_filt = df_range_filtered.loc[mask].copy()
+    # FILTRO ESPECIFICO: EMBOBINA
+    df_filt = df_range[df_range[c_centro].astype(str).str.strip() == "EMBOBINA"].copy()
     
     if df_filt.empty: return "", []
 
     df_maq = _prepare_maquina_table(df_filt)
     df_ope = _prepare_operario_table(df_filt, start, end)
-
-    # Generar Gráfica de Pareto para Leno
-    chart_path = _generate_pareto_tp_leno(df_filt, start.isoformat())
 
     sum_cs, sum_tc, sum_tp = df_maq["cor.estandar"].sum(), df_maq["t_corrida"].sum(), df_maq["T.perd"].sum()
     totals = {
@@ -309,27 +261,16 @@ def build_pdf_leno(df_range_filtered: pd.DataFrame, start: date, end: date) -> t
         "efic_total": (sum_cs / sum_tc * 100) if sum_tc > 0 else 0
     }
 
-    pdf = ReporteLeno(start, end)
+    pdf = ReporteEmbobina(start, end)
     pdf.add_page()
     if not df_maq.empty: pdf.draw_table_maquinas(df_maq)
     if not df_ope.empty: pdf.draw_table_ops(df_ope)
     pdf.draw_final_summary(totals)
 
-    # Agregar sección de Pareto al final del informe Leno
-    if chart_path:
-        pdf.draw_pareto_section(chart_path)
-
-    fname = f"Analisis_Proceso_Leno_{start.isoformat()}_{end.isoformat()}.pdf"
-    out_path = os.path.join(REPORTS_DIR, fname)
+    out_path = os.path.join(REPORTS_DIR, f"Reporte_Embobina_{start}_{end}.pdf")
     pdf.output(out_path)
-
-    # Limpieza de archivo temporal
-    if chart_path and os.path.exists(chart_path):
-        try: os.remove(chart_path)
-        except: pass
-
     return out_path, []
 
-def handle_leno_message(_pk, _txt): return False
+def handle_embobina_message(_pk, _txt): return False
 
-__all__ = ["COLS", "build_pdf_leno", "handle_leno_message"]
+__all__ = ["_download_embobina_df", "build_pdf_embobina", "handle_embobina_message"]
