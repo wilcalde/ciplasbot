@@ -75,6 +75,9 @@
     { "phone_e164": "573113987162", "Apellidos_Nombres": "CARRASCAL SANDON FREDY DAVID", "area": "COSTURA" },
     { "phone_e164": "573226764234", "Apellidos_Nombres": "VILLARREAL MARTINEZ SORAYA VANESSA", "area": "COSTURA" },
     { "phone_e164": "573134693372", "Apellidos_Nombres": "GRANADOS GARCIA NELSON DAVID", "area": "COSTURA" },
+    { "phone_e164": "573115098040", "Apellidos_Nombres": "CASTAÑO ROZO DUISBER", "area": "COSTURA" },
+    { "phone_e164": "573223589218", "Apellidos_Nombres": "CARLOS PARADA JOHAN SEBASTIAN", "area": "COSTURA" },
+    { "phone_e164": "573023427135", "Apellidos_Nombres": "PEÑA VARGAS CARLOS HERNANDO", "area": "COSTURA" },
     { "phone_e164": "573203524723", "Apellidos_Nombres": "BOCANEGRA MALAMBO JOSE SEBASTIAN", "area": "COSTURA" }
   ]
 }

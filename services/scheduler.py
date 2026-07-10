@@ -11,6 +11,7 @@ from workflows.compile_daily_summary import compile_daily_summary
 from workflows.supervision_questions import send_supervision_questions
 from workflows.compile_supervision_report import compile_supervision_report
 from workflows.dashboard_notifications import send_dashboard_links
+from workflows.auto_send_previous_day_report import check_and_send_report  # 🚀 NUEVO
 
 # 🔔 Recordatorios de tareas (ADMIN + SUPERVISORES)
 from services.tasks_manager import run_pending_tasks_reminders
@@ -120,6 +121,19 @@ def start_scheduler():
     schedule_window_jobs(scheduler)  # registra el job periódico
     run_nudges()  # crea config/wa_conversations.json al arranque si no existe
 
+    # ✅ 6. (🚀 NUEVO) Envío automático del informe del día anterior al actualizarse la base de datos
+    # Se evalúa de Lunes a Viernes entre las 12:00 PM y las 3:00 PM cada 15 minutos
+    scheduler.add_job(
+        check_and_send_report,
+        'cron',
+        day_of_week='0-4',
+        hour='11-15',
+        minute='*/15',
+        id='auto_send_previous_report',
+        misfire_grace_time=300,
+        coalesce=True
+    )
+
     # —— Resumen consola ——
     wa_cfg = load_config()
     print(
@@ -145,6 +159,7 @@ def start_scheduler():
         f"ventana={wa_cfg.get('window_hours', 24)}h, "
         f"nudge a {wa_cfg.get('nudge_before_minutes', 60)} min, "
         f"chequeo cada {wa_cfg.get('check_every_minutes', 5)} min\n"
+        "   - 🚀 Auto-envío informe día anterior: L-V de 12:00 PM a 3:00 PM (cada 15 min)\n"
     )
 
     scheduler.start()
