@@ -117,10 +117,8 @@ def check_and_send_report():
                     sups = _find_supervisors_by_keyword("costura")
                     sup_phones = {phone for _, phone in sups}
                     
-                    # Destinatarios del documento PDF (Supervisores + Admin)
+                    # Destinatarios del documento PDF (Solo Supervisores)
                     doc_recipients = sup_phones.copy()
-                    if admin_phone:
-                        doc_recipients.add(admin_phone)
                         
                     _send_reports_to_recipients(doc_recipients, p, f"📄 EFICIENCIA COSTURA - {date_str}")
                     _cleanup_paths(temp_paths)
@@ -154,8 +152,6 @@ def check_and_send_report():
                     sup_phones = {phone for _, phone in sups}
                     
                     doc_recipients = sup_phones.copy()
-                    if admin_phone:
-                        doc_recipients.add(admin_phone)
                         
                     for func, name in [(build_pdf_cableado, "CABLEADO"), (build_pdf_torsion, "TORSIÓN"), 
                                        (build_pdf_trenzado, "TRENZADO"), (build_pdf_embobina, "EMBOBINADO")]:
@@ -196,8 +192,6 @@ def check_and_send_report():
                         sup_phones = {phone for _, phone in sups}
                         
                         doc_recipients = sup_phones.copy()
-                        if admin_phone:
-                            doc_recipients.add(admin_phone)
                             
                         _send_reports_to_recipients(doc_recipients, p, f"📄 EFICIENCIA IMPRESIÓN - {date_str}")
                         _cleanup_paths(temp_paths)
@@ -230,8 +224,6 @@ def check_and_send_report():
                     sup_phones = {phone for _, phone in sups}
                     
                     doc_recipients = sup_phones.copy()
-                    if admin_phone:
-                        doc_recipients.add(admin_phone)
                         
                     for f, n in [(build_pdf_gasa, "GASA"), (build_pdf_leno, "LENO"), 
                                  (build_pdf_planas, "PLANAS"), (build_pdf_cortadoras, "CORTADORAS")]:
@@ -257,18 +249,28 @@ def check_and_send_report():
         except Exception as e:
             print(f"❌ Error en reportes de Fileteado: {e}")
 
-        # --- NOTA AL ADMINISTRADOR (UNIFICADA) ---
+        # --- ENVIAR INFORME MACRO-GERENCIAL AL ADMINISTRADOR ---
         if enviado_alguno and admin_phone:
             try:
+                from workflows.manager_planta_report import handle_manager_planta_report
+                
                 admin_msg = (
                     f"🤖 *CiplasBot Informa*:\n"
-                    f"Hola Administrador, se han generado y enviado con éxito todos los reportes de eficiencia de producción del día *{date_str}* a sus respectivos supervisores (Costura, Cuerdas, Impresión y Fileteado).\n\n"
-                    f"A tu número le ha llegado la copia de todos los archivos PDF. Te invitamos a ingresar y revisar el desempeño global de la planta. 📊🏢"
+                    f"Hola Administrador, se han generado y enviado con éxito los reportes de eficiencia del día *{date_str}* a los supervisores.\n\n"
+                    f"A continuación, se generará tu *Informe Macro-Gerencial de Planta* consolidado para el día *{date_str}*. 📊🏢"
                 )
                 send_whatsapp_message(admin_phone, admin_msg)
-                print("✅ Mensaje final unificado enviado al administrador.")
+                
+                # Ejecutar la generación del reporte macro-gerencial del día anterior
+                handle_manager_planta_report(
+                    phone=admin_phone,
+                    manager_name="Administrador",
+                    to_norm=admin_phone,
+                    target_date=target_date
+                )
+                print("✅ Informe Macro-Gerencial enviado al administrador.")
             except Exception as e:
-                print(f"❌ Error enviando mensaje final al administrador: {e}")
+                print(f"❌ Error enviando informe Macro-Gerencial al administrador: {e}")
 
         # 4. Registrar el envío exitoso
         if enviado_alguno:

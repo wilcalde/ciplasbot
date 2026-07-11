@@ -161,7 +161,7 @@ def _apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
             
     return df_filtered
 
-def _download_all_lines() -> pd.DataFrame:
+def _download_all_lines(target_date: date = None) -> pd.DataFrame:
     all_data = []
     month, year = datetime.now().month, datetime.now().year
     url_cache = {} 
@@ -179,10 +179,14 @@ def _download_all_lines() -> pd.DataFrame:
             fecha_col = _find_col(df, BASE_COLS["fecha"])
             if fecha_col:
                 df["_fecha"] = pd.to_datetime(df[fecha_col], errors="coerce", dayfirst=True)
-                fmax = df["_fecha"].dropna().max()
-                if pd.notna(fmax):
-                    month, year = fmax.month, fmax.year
-                    df = df[(df["_fecha"].dt.month == month) & (df["_fecha"].dt.year == year)].copy()
+                if target_date is not None:
+                    df = df[df["_fecha"].dt.date == target_date].copy()
+                    month, year = target_date.month, target_date.year
+                else:
+                    fmax = df["_fecha"].dropna().max()
+                    if pd.notna(fmax):
+                        month, year = fmax.month, fmax.year
+                        df = df[(df["_fecha"].dt.month == month) & (df["_fecha"].dt.year == year)].copy()
             
             df = _apply_filters(df, config.get("filters", {}))
             if df.empty: continue
@@ -310,7 +314,7 @@ def _plot_global_downtime(df: pd.DataFrame, month: int, year: int) -> str | None
 # =========================
 # PDF BUILDER
 # =========================
-def _build_planta_pdf(df: pd.DataFrame, summary: pd.DataFrame, ai_line_texts: dict, global_ai_text: str, img_pareto: str, month: int, year: int, name: str) -> str:
+def _build_planta_pdf(df: pd.DataFrame, summary: pd.DataFrame, ai_line_texts: dict, global_ai_text: str, img_pareto: str, month: int, year: int, name: str, target_date: date = None) -> str:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     page_w = pdf.w - 2 * pdf.l_margin
@@ -322,7 +326,8 @@ def _build_planta_pdf(df: pd.DataFrame, summary: pd.DataFrame, ai_line_texts: di
     pdf.cell(0, 15, "INFORME MACRO-GERENCIAL DE PLANTA", ln=1, align="C")
     pdf.set_font("Helvetica", "", 12)
     pdf.set_text_color(50, 50, 50)
-    pdf.cell(0, 6, f"Periodo Analizado: {year}-{month:02d} | Generado para: {name}", ln=1, align="C")
+    period_str = target_date.strftime('%Y-%m-%d') if target_date else f"{year}-{month:02d}"
+    pdf.cell(0, 6, f"Periodo Analizado: {period_str} | Generado para: {name}", ln=1, align="C")
     pdf.ln(10)
 
     pdf.set_font("Helvetica", "B", 14)
@@ -473,17 +478,22 @@ def _build_planta_pdf(df: pd.DataFrame, summary: pd.DataFrame, ai_line_texts: di
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 5, _sanitize_pdf_text(global_ai_text))
 
-    out_path = os.path.join(REPORTS_DIR, f"Macro_Gerencial_{_slug(name)}_{year}{month:02d}.pdf")
+    suffix = target_date.strftime("%Y%m%d") if target_date else f"{year}{month:02d}"
+    out_path = os.path.join(REPORTS_DIR, f"Macro_Gerencial_{_slug(name)}_{suffix}.pdf")
     pdf.output(out_path)
     return out_path
 
 # =========================
 # CONTROLADOR PRINCIPAL
 # =========================
-def handle_manager_planta_report(phone: str, manager_name: str, to_norm: str):
-    send_whatsapp_message(to_norm, f"🌐 Procesando Macro-Data de la Planta y análisis por IA... Esto tomará unos segundos. ⏳")
+def handle_manager_planta_report(phone: str, manager_name: str, to_norm: str, target_date: date = None):
+    if target_date:
+        date_str = target_date.strftime('%d/%m/%Y')
+        send_whatsapp_message(to_norm, f"🌐 Procesando Macro-Data de la Planta y análisis por IA para el día *{date_str}*... Esto tomará unos segundos. ⏳")
+    else:
+        send_whatsapp_message(to_norm, f"🌐 Procesando Macro-Data de la Planta y análisis por IA... Esto tomará unos segundos. ⏳")
     
-    df, month, year = _download_all_lines()
+    df, month, year = _download_all_lines(target_date=target_date)
     if df.empty:
         send_whatsapp_message(to_norm, "❌ Error: No se pudo consolidar la data.")
         return True
@@ -518,10 +528,11 @@ def handle_manager_planta_report(phone: str, manager_name: str, to_norm: str):
     global_ai_text = _get_ai_global_roadmap(df, summary, manager_name)
     img_pareto = _plot_global_downtime(df, month, year)
     
-    pdf_path = _build_planta_pdf(df, summary, ai_line_texts, global_ai_text, img_pareto, month, year, manager_name)
+    pdf_path = _build_planta_pdf(df, summary, ai_line_texts, global_ai_text, img_pareto, month, year, manager_name, target_date=target_date)
     
     try:
-        send_whatsapp_document(to_norm, pdf_path, caption="🏢 Informe Macro-Gerencial de Planta finalizado.")
+        caption_str = f"🏢 Informe Macro-Gerencial de Planta finalizado ({target_date.strftime('%d/%m/%Y') if target_date else f'{year}-{month:02d}'})."
+        send_whatsapp_document(to_norm, pdf_path, caption=caption_str)
         if img_pareto: os.remove(img_pareto)
         os.remove(pdf_path)
     except Exception as e:

@@ -122,12 +122,12 @@ def start_scheduler():
     run_nudges()  # crea config/wa_conversations.json al arranque si no existe
 
     # ✅ 6. (🚀 NUEVO) Envío automático del informe del día anterior al actualizarse la base de datos
-    # Se evalúa de Lunes a Viernes entre las 12:00 PM y las 3:00 PM cada 15 minutos
+    # Se evalúa de Lunes a Viernes entre las 11:00 PM y las 3:00 PM cada 15 minutos
     scheduler.add_job(
         check_and_send_report,
         'cron',
-        day_of_week='0-4',
-        hour='11-15',
+        day_of_week='0-5',
+        hour='10-16',
         minute='*/15',
         id='auto_send_previous_report',
         misfire_grace_time=300,
